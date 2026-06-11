@@ -1,0 +1,84 @@
+## The `static` Keyword in C++
+
+The `static` keyword changes how a variable or function is stored and accessed. Its behavior changes based on where it is declared.
+
+| Location | Scope | Lifetime | Behavior |
+| --- | --- | --- | --- |
+| **Global** | File scope | Entire program | Restricted to the translation unit (file). |
+| **Inside Function** | Function scope | Entire program | Initialized once; persists between calls. |
+| **Inside Class** | Class scope | Entire program | Shared by all instances of the class. |
+
+---
+
+### 1. Static Global Variables
+
+When you declare a variable `static` at the global level (outside of any function or class), it is **internal linkage**. This means the variable is only visible within that specific file, preventing name collisions with other files.
+
+```cpp
+static int globalCounter = 0; // Only visible in this .cpp file
+
+void increment() {
+    globalCounter++;
+}
+
+```
+
+---
+
+### 2. Static Local Variables (Inside Functions)
+
+A `static` variable inside a function is initialized only the **first time** the control flow hits its declaration. It retains its value throughout the entire life of the program, even after the function finishes executing.
+
+```cpp
+void counter() {
+    static int count = 0; // Initialized once
+    count++;
+    std::cout << "Count: " << count << std::endl;
+}
+
+int main() {
+    counter(); // Count: 1
+    counter(); // Count: 2
+    return 0;
+}
+
+```
+
+---
+
+### 3. Static Class Members
+
+Static members belong to the **class type itself**, not to any individual object. Because they exist independently of objects, they must be defined in the global scope to allocate memory, and they are typically accessed via the scope resolution operator (`::`).
+
+#### Example:
+
+```cpp
+class Entity {
+public:
+    static int x; // Declaration
+    static int getX() { return x; } // Static method
+};
+
+// Definition (Required to allocate memory)
+int Entity::x = 0; 
+
+int main() {
+    Entity::x = 5; // Using scope resolution
+    int val = Entity::getX();
+    return 0;
+}
+
+```
+
+#### Important Rules for Class Statics:
+
+* **Initialization:** You must define/initialize static members outside the class (unless using `inline static` in C++17).
+* **Static Methods:** Static methods **cannot** access non-static members (like `this->x`) because they are not associated with a specific object instance. They can only access other `static` variables or `static` methods.
+
+---
+
+### Summary Checklist
+
+* Use **Global `static**` to hide variables from other files.
+* Use **Function `static**` for persistent state that shouldn't be global but needs to survive across function calls.
+* Use **Class `static**` to share data across all instances of a class (e.g., a counter of how many entities have been created).
