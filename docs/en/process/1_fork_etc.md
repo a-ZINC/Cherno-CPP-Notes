@@ -340,6 +340,64 @@ habit rather than a runtime leak — the destructor is your safety net. It also 
 API shape of `std::thread`, so if your team later migrates part of this to threads instead
 of processes, the calling code barely changes.
 
+In the context of the `waitpid` function, these arguments are used to manage how the parent process waits for a child process to finish.
+
+The function signature is:
+`pid_t waitpid(pid_t pid, int *wstatus, int options);`
+
+Here is the breakdown of the parameters you asked about:
+
+---
+
+### 1. The `status` (`int *wstatus`)
+
+The `status` argument is a **pointer to an integer** where `waitpid` will store information about *how* the child process terminated.
+
+It is not just a simple return code; it is a bit-mask. You should **not** inspect the integer directly. Instead, you must use POSIX-defined **macros** to extract the data from it:
+
+* **`WIFEXITED(status)`**: Returns true if the child terminated normally (e.g., calling `exit()` or returning from `main`).
+* **`WEXITSTATUS(status)`**: If `WIFEXITED` is true, this macro extracts the actual exit code (the value passed to `exit()`).
+* **`WIFSIGNALED(status)`**: Returns true if the child was terminated by a signal (e.g., a crash like `SIGSEGV` or `SIGKILL`).
+* **`WTERMSIG(status)`**: If `WIFSIGNALED` is true, this macro tells you which signal killed the process.
+
+**Example usage:**
+
+```cpp
+int status;
+waitpid(pid_, &status, 0);
+
+if (WIFEXITED(status)) {
+    int exit_code = WEXITSTATUS(status);
+    printf("Child exited with code: %d\n", exit_code);
+}
+
+```
+
+---
+
+### 2. The `0` (the `options` parameter)
+
+The `0` is the `options` argument. When you pass `0`, you are telling the system to **perform a standard, blocking wait**.
+
+* **Blocking behavior:** If the child process is still running, the parent process will stop and "sleep" at this line until the child process finishes.
+* **Other common options:**
+* **`WNOHANG`**: This makes the call **non-blocking**. If the child is still running, `waitpid` returns immediately with a value of `0` instead of waiting. This is useful if you want to check on a child process without pausing your main program's loop.
+* **`WUNTRACED`**: Also returns if the child has stopped (but not terminated) because of a signal.
+
+
+
+---
+
+### Summary Table
+
+| Parameter | Type | Purpose |
+| --- | --- | --- |
+| `pid_` | `pid_t` | The specific Process ID of the child you want to wait for. |
+| `&status` | `int *` | A memory address where the system writes information about the child's exit state. |
+| `0` | `int` | The option flag. `0` means "wait until the child is done." |
+
+**Why it matters:** Without calling `waitpid` (or `wait`), you end up with **"Zombie Processes"**. When a child process dies, it stays in the system process table as a "zombie" so the parent can read its exit status. If the parent never calls `waitpid`, the zombie stays there forever, consuming a process ID slot.
+
 ---
 
 ## Chapter 3 — Visualizing What Actually Happens in Memory
