@@ -470,7 +470,7 @@ Two standard remedies, both attacking the root cause directly:
 
 ---
 
-## 5. Key Takeaways
+## 5. Key Takeaways — Mutex Internals & Thrashing
 
 - A mutex is two-tiered: an essentially-free atomic CAS fast path, and a
   syscall-based slow path that's 100–1000x more expensive. Task size
@@ -490,9 +490,4 @@ Two standard remedies, both attacking the root cause directly:
 - Thrashing is a specific compounding feedback loop, not just "a lot of
   overhead" — it kicks in when thread count meaningfully exceeds core count
   combined with very small critical sections, and its hallmark is
-  *negative* scaling: throughput going down as concurrency goes up.
-- The fix for both plain overhead and true thrashing is the same direction:
-  reduce how often threads need to synchronize (batch more work per lock),
-  or remove the OS from the loop entirely for simple hot operations
-  (atomics) — the standard "reach for a mutex first, atomics only for
-  narrow, measured hot paths" advice holds throughout.
+  *negative* scaling: through
