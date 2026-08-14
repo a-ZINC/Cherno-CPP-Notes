@@ -345,3 +345,113 @@ almost every lock-free algorithm ever written, including every one in your sourc
 material's queue and stack implementations. We'll build a lock-free stack from scratch,
 and then — on purpose — reproduce the **ABA problem**, a bug so subtle it took the
 industry years to name properly.
+
+---
+
+Ah, look closely at what happened when you changed `naiveMutex_()`!
+
+You moved the `std::lock_guard` **inside the loop**:
+
+```cpp
+for (size_t i = start; i < end; ++i) {
+    std::lock_guard<std::mutex> lock(mtx); // Locked & unlocked 50 MILLION times per thread!
+    naiveMutexSum += x[i];
+}
+
+```
+
+Instead of locking once per chunk, your threads are now locking and unlocking the mutex **200 million times total** under heavy concurrent contention.
+
+---
+
+### Why the Results Exploded
+
+1. **`naiveMutex_` jumped to 4.79 seconds:**
+When you lock and unlock a mutex 200 million times, you are forcing the operating system to deal with constant thread contention, state checks, and potentially kernel-level `futex` syscalls or heavy spinning.
+2. **The Battle of the Anti-Patterns (`5.66s` vs `4.79s`):**
+* **Naive Atomic** hits the hardware bus lock 200 million times (`5.66s`).
+* **Naive Mutex** hits the OS synchronization machinery 200 million times (`4.79s`).
+Both approaches are catastrophic because they commit the cardinal sin of multithreading: **fine-grained synchronization per individual element** instead of local batching.
+
+
+
+### The Ultimate Takeaway
+
+Your benchmark has now accidentally recreated a classic computer science demonstration: **At the extreme end of bad design, a naive mutex-per-operation and a naive atomic-per-operation are both equally terrible.**
+
+This is why **Methods B and C** (Local Accumulation + a single sync at the end) are the only way to write high-performance concurrent code. They drop the synchronization count from 200 million down to just **4** (once per thread).
+
+When you force 4 threads to aggressively hammer the **exact same memory address** 200 million times in a tight loop, **naive atomics can actually lose to a mutex.**
+
+It feels completely backwards—after all, atomics avoid the operating system kernel, so why are they slower? The answer lies in how hardware handles unthrottled chaos versus structured queuing.
+
+---
+
+### 1. Atomics Create a Hardware "Cache-Line Storm" (Bus Saturation)
+
+In your naive atomic version (`fetch_add`), all 4 CPU cores are running at 100% capacity, furiously executing locked instructions simultaneously on the exact same variable.
+
+* The cache line containing `naiveSum` cannot stay in any core's cache; it is instantly invalidated and forced to bounce across the CPU's internal interconnect bus millions of times per second (via the MESI cache-coherency protocol).
+* Every core is actively fighting every other core in a zero-sum hardware war, clogging the memory subsystem with continuous bus-lock traffic.
+
+### 2. Mutexes Accidentally Act as a Traffic Cop (OS Queuing)
+
+When you use a `std::mutex` inside a loop, it doesn't just block code—it relies on operating system primitives (like `futex` on Linux or critical sections on Windows).
+
+* Under extreme contention, when Thread A holds the mutex, Threads B, C, and D don't just furiously hammer the memory bus. The OS steps in, puts the waiting threads to sleep, or organizes them into a clean, orderly queue.
+* **The Irony:** By forcing threads to wait and sleep, the OS **artificially throttles the chaos**. Only one core is actively touching the memory at a time, while the others are paused. This drastically reduces cache-line bouncing compared to the unthrottled stampede of the atomic loop.
+
+---
+
+### The Golden Rule of Concurrency
+
+* **Atomics are lightning-fast** when contention is low or moderate, because they skip OS overhead.
+* **Atomics become a disaster** under pathological contention (multiple threads hammering the exact same scalar variable millions of times), because hardware has no built-in queue—every core just fights to the death for ownership of that single memory address.
+
+---
+### The assumption that **"atomics are much better than mutexes"** isn't wrong—it is actually true for **95% of real-world use cases**.
+
+The reason you felt like atomics were a trap in your benchmark is that you accidentally created a **pathological anti-pattern**: forcing multiple cores to aggressively hammer the *exact same memory address* millions of times in a tight loop. In computer architecture, that specific scenario is a worst-case scenario for hardware.
+
+In normal, well-designed software, atomics genuinely crush mutexes. Here is why developers praise them and when they are actually the right tool:
+
+---
+
+### 1. Read-Heavy Workloads (The Killer Feature)
+
+Imagine you have a configuration flag or a status variable that gets **read a million times**, but only **written once** (e.g., a shutdown flag: `std::atomic<bool> running{true};`).
+
+* **With a Mutex:** Even if a thread just wants to *read* the flag, it has to acquire the mutex. Acquiring a mutex means writing to memory to change its state, which forces a cache-line invalidation across cores, even though nobody is changing the data!
+* **With an Atomic:** Threads can read an atomic variable using relaxed memory orders with **zero cache-line bouncing**. On modern CPUs, multiple cores can read the exact same cache line simultaneously in the "Shared" MESI state. It costs virtually nothing. Atomics only bounce when someone actually *writes* to them.
+
+### 2. Zero OS Kernel Overhead
+
+When you lock a mutex and another thread is already holding it, the operating system kernel has to step in.
+
+* The OS suspends your thread, saves its registers, pushes it off the CPU core, and puts it to sleep.
+* Later, it has to wake it back up. This process (called a **context switch**) requires switching from user mode to kernel mode, costing thousands of CPU cycles.
+
+Atomics **never go to sleep**. They operate entirely in user space using direct hardware instructions. If an atomic operation fails (like a compare-and-swap loop), the thread loops instantly in user space without ever asking the OS for permission.
+
+### 3. Lock-Free Data Structures (True Concurrency)
+
+Mutexes are **pessimistic**: they assume *everyone* is going to fight over the data, so they lock the *entire* data structure. If 10 threads want to push items into a list, a mutex forces them into a single-file line: only one thread works, and the other 9 sit idle.
+
+Atomics allow you to build **lock-free data structures** (like lock-free queues and stacks using Compare-and-Swap).
+
+* Multiple threads can attempt to modify the structure at the same time.
+* If two threads collide, one succeeds instantly, and the other simply retries its local calculation for a split second.
+* No one gets put to sleep, no locks are held, and chunks of work happen concurrently.
+
+---
+
+### Summary: The Tool vs. The Job
+
+| Scenario | Mutex | Atomic | Winner |
+| --- | --- | --- | --- |
+| **Simple flags/counters with low contention** | Overkill (slow OS overhead) | Fast, lightweight, zero kernel calls | **Atomic** |
+| **Read-heavy shared state** | Forces lock acquisition just to read | Allows simultaneous shared reads | **Atomic** |
+| **Complex invariants (updating a map/multiple variables together)** | Protects multiple lines easily | Impossible to do safely without complex locking | **Mutex** |
+| **Pathological stampede (100 threads hammering 1 scalar variable)** | OS queues threads and throttles chaos | Causes a violent hardware cache-line storm | **Mutex** (or better architecture) |
+
+Atomics aren't a myth; they are a high-performance scalpel. They are designed for flags, reference counting, sequence numbers, and lock-free nodes—not for turning a single shared variable into a shared chalkboard for a stampede of parallel threads.
