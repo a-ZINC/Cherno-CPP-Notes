@@ -274,6 +274,85 @@ g++ -O2 -std=c++20 -pthread store_cost.cpp -o store_cost
 
 ---
 
+### Q1: What is memory ordering, and why do we even need it if our code runs line-by-line?
+
+**Answer:**
+When you write code in C++, you write instructions in a specific sequence (e.g., writing data to a payload variable, then setting a flag to `true`). However, **source code order is not execution order or visibility order.**
+
+Both the **compiler** (during optimization) and the **CPU hardware** (via out-of-order execution and store buffers) are legally allowed to shuffle instructions around or delay when they become visible to other CPU cores, as long as the single-threaded outcome looks correct.
+
+Memory ordering tells the compiler and the CPU: *"Stop! Do not reorder instructions across this line, and make sure my cache/store buffer is flushed so other cores see the truth."*
+
+---
+
+### Q2: What does `memory_order_relaxed` actually do, and when is it safe to use?
+
+**Answer:**
+`memory_order_relaxed` provides **atomicity, but zero ordering promises.**
+
+* It guarantees that reading or writing the atomic variable itself is never torn or corrupted.
+* It makes **no promise** about what happens to any other variable around it. Instructions before a relaxed operation can be freely reordered after it, and vice-versa.
+
+**When is it safe?**
+It is only safe when you are using the atomic variable purely as an isolated counter or statistic (like a local thread summing up array elements), where nothing else in your program's correctness depends on when that value becomes visible relative to other memory.
+
+---
+
+### Q3: What is the classic producer-consumer handoff problem, and why does a `relaxed` flag fail ThreadSanitizer (TSan)?
+
+**Answer:**
+Imagine a producer thread writing non-atomic data to a `payload` array, and then setting an atomic flag: `ready.store(true, relaxed)`. A consumer thread waits in a loop: `while (!ready.load(relaxed)) {}` before reading the payload.
+
+If you use `relaxed` on both sides, **TSan will unconditionally flag a data race.**
+
+* **Why?** Because `relaxed` establishes no "happens-before" relationship. To the consumer's CPU, the `ready` flag becoming `true` is completely disconnected from the `payload` array.
+* The consumer's CPU core might read stale values of `payload` sitting in its local cache, or read them out of order, leading to a genuine data race.
+
+---
+
+### Q4: How do `release` and `acquire` fix the handoff without paying a massive performance penalty?
+
+**Answer:**
+They form a two-way synchronization handshake:
+
+1. **`release` (on the producer's store):** Acts as a physical barrier. It tells the CPU to completely flush its store buffer and ensures that all non-atomic writes to the `payload` made *before* this store are published and visible to the system.
+2. **`acquire` (on the consumer's load):** Acts as a matching gate. When the consumer sees the flag turn `true` with an acquire load, its CPU is forced to invalidate its local cache and pull in fresh data, guaranteeing it sees everything the producer wrote *before* the release.
+
+---
+
+### Q5: What is `memory_order_acq_rel`, and why is it needed for Read-Modify-Write (RMW) operations like reference counting?
+
+**Answer:**
+Some atomic operations—like `fetch_add`, `exchange`, and `compare_exchange`—are **Read-Modify-Write (RMW)** operations. They simultaneously read a value and write a new one in a single step.
+
+Because an RMW operation is a two-way street, it often needs **both** promises at the same time:
+
+* The **release** half to publish its own updates to whoever comes next.
+* The **acquire** half to synchronize with everything published by whoever came before.
+
+`memory_order_acq_rel` bundles both requirements into a single instruction. A classic example is a smart pointer's reference count decrement (`ref_count.fetch_sub(1, acq_rel)`), where every thread hands off its work via release, and the final thread grabs the baton via acquire before deleting the object.
+
+---
+
+### Q6: What happens if you use a `relaxed` decrement on a shared reference count instead of `acq_rel`? (The Heap Corruption Mystery)
+
+**Answer:**
+If you use a relaxed decrement and the reference count hits `0`, the thread immediately calls `delete` to free the object's memory back to the system.
+
+* **The Disaster:** Because it was a relaxed decrement, another CPU core's trailing writes to that object might still be sitting lazily in a **store buffer**.
+* A nanosecond later, that store buffer flushes its old write straight into memory—**which has already been freed and repurposed by the Windows heap manager for internal bookkeeping**.
+* Overwriting those heap metadata pointers shatters the heap manager's integrity, immediately crashing the program with exit code **`0xc0000374` (`STATUS_HEAP_CORRUPTION`)**.
+
+---
+
+### Q7: What is `std::memory_order_seq_cst`, why is it the default, and why does it cost 18x more?
+
+**Answer:**
+
+* **What it is:** Sequential Consistency (`seq_cst`) is stronger than release/acquire. While release/acquire is a pairwise agreement between two threads on one variable, `seq_cst` guarantees that **every thread in the program agrees on one single, absolute global timeline** of every `seq_cst` operation across *all* atomic variables.
+* **Why it's the default:** It is the safest option because it completely prevents programmers from accidentally introducing complex cross-variable reordering bugs.
+* **Why it costs ~18x more:** To enforce a strict global timeline across all CPU cores, the hardware and compiler cannot rely on lazy store buffers. They must emit locked instructions (like `xchg` on x86) that force CPU cores to pause, stall their pipelines, and synchronize their caches, creating a massive performance tax.
+
 ## What's next — Chapter 6
 
 Chapter 5 told you *what* each memory order promises, verified against real races and
