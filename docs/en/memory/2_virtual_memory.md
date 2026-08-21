@@ -119,6 +119,64 @@ Binary (relevant lower 48 bits):
 
 ---
 
+### 3.1 A second, simpler worked example: mapping address `0xA3F`
+
+This is the same algorithm as above, done once more with smaller, easier-to-follow numbers — good as a sanity check before moving on to the full page-table machinery.
+
+When your code accesses a specific virtual address — say `0xA3F` — the MMU does **not** look that exact address up in the page table. It never sees "0xA3F" as one indivisible thing. It always splits it first.
+
+**Step 1 — Split the virtual address**
+
+Assume the standard 4 KB page size (`0x1000` in hex → `2^12` bytes → **12 offset bits**).
+
+```
+Hex value:    0xA3F
+Binary value: 1010 0011 1111        (fits in 12 bits)
+
+Since 0xA3F < 0x1000 (4096), this address falls ENTIRELY within the very
+first page of memory:
+
+   Virtual Page Number (VPN) = 0        ← "which page?"
+   Page Offset               = 0xA3F    ← "which byte inside that page?"
+```
+
+**Step 2 — Consult the Page Table**
+
+```
+1. MMU uses VPN (0) as an INDEX into row 0 of this process's Page Table.
+2. Reads the PTE for that row:
+     - Valid bit = 1  →  the page IS resident in physical RAM
+     - Physical Page Number (PPN) stored in that PTE = 0x7
+       (the OS previously loaded this page into physical frame 0x7000)
+```
+
+**Step 3 — Generate the Physical Address**
+
+The offset is copied across **completely unchanged**. Only the page number part gets swapped:
+
+```
+   Physical Page Number (PPN) = 0x7     → points at physical frame 0x7000
+   Page Offset (unchanged)    = 0xA3F
+   ─────────────────────────────────────
+   Final Physical Address     = 0x7A3F
+```
+
+**The takeaway, stated plainly:** the MMU never maps a single byte or a single variable directly. It translates the **page container** (`VPN 0 → PPN 7`) — a coarse, page-granularity swap — while the **offset (`0xA3F`) rides along untouched**, pointing at the exact same relative position inside the new physical page, which is what ends up landing precisely on your variable.
+
+```mermaid
+flowchart LR
+    A["Virtual Address 0xA3F
+    binary: 1010 0011 1111"] --> B["Split at bit 12:
+    VPN = 0
+    Offset = 0xA3F"]
+    B --> C["Page Table row 0:
+    Valid=1, PPN=0x7"]
+    C --> D["Glue: PPN(0x7) + Offset(0xA3F)
+    = Physical Address 0x7A3F"]
+```
+
+---
+
 ## 4. The Page Table — just an array, sitting in ordinary RAM
 
 **Non-obvious but critical fact, repeated because it matters everywhere below:**
@@ -391,6 +449,148 @@ task_struct (one per process)
 This list is exactly what Section 6's fault-classification flowchart checks against.
 
 ---
+
+### 10.1 Zooming in: what's actually in each segment, and how it gets there
+
+Here's the same layout again, but now annotated with real-looking addresses and exactly what's stored in each region, low address at the bottom to high address at the top (the way it's conventionally drawn):
+
+```mermaid
+flowchart TD
+    subgraph HI [" "]
+    direction TB
+        A6["0x00007FFFFFFFFFFF  ≈ top of user space
+        ▲
+        USER STACK
+        - local variables
+        - function arguments
+        - return addresses
+        - saved registers
+        Grows DOWNWARD as functions call deeper
+        Private, demand-zero"]
+        A5["      ↓ (unused gap — 'the void') ↑
+        Huge unmapped region between stack and heap.
+        This is WHY stack and heap can each grow toward
+        each other without colliding, on a 48-bit space."]
+        A4["MEMORY-MAPPED REGION
+        - shared libraries (libc.so, etc.)
+        - mmap()'d files
+        Shared, file-backed"]
+        A3["RUNTIME HEAP  (malloc/free)
+        ▲ grows UPWARD, tracked by the 'brk' pointer
+        Private, demand-zero"]
+        A2[".bss — Uninitialized global/static data
+        (e.g. 'int global_arr[1000];' with no initializer)
+        Private, demand-zero — OS just hands you zeroed pages"]
+        A1[".data — Initialized global/static data
+        (e.g. 'int counter = 0;')
+        Private, file-backed — actual bytes come from the executable file"]
+        A0[".text — Program code (machine instructions)
+        starts at 0x0000000000400000 on classic x86-64 Linux
+        Private, file-backed, READ-ONLY + executable"]
+    end
+    A6 --- A5 --- A4 --- A3 --- A2 --- A1 --- A0
+```
+
+**Reminder of the two axes that describe every region (from Section 10):**
+- **Private vs Shared** — does only this process see it, or can other processes point at the same physical pages?
+- **File-backed vs Demand-zero** — does its initial content come from a file on disk, or does the OS just hand you fresh zeros on first touch?
+
+### 10.2 How a program actually gets loaded into RAM when you run it
+
+This is the part people usually picture wrong: running a program does **not** mean the OS reads the whole executable file into RAM up front. Almost nothing is copied into memory at launch time.
+
+```mermaid
+flowchart TD
+    Run["You run: ./a.out"] --> Fork["Shell calls fork()
+    (Section 11 — child gets a COPY of the shell's page table,
+    not its data)"]
+    Fork --> Exec["Child calls execve('a.out', ...)"]
+    Exec --> Del["1. DELETE the child's existing vm_area_structs
+    (throws away the old program's mappings entirely)"]
+    Del --> Map["2. CREATE NEW vm_area_structs, but only as METADATA:
+       .text  → mapped to a.out's code section ON DISK
+       .data  → mapped to a.out's data section ON DISK
+       .bss   → mapped to an anonymous demand-zero region
+       heap   → demand-zero, initially zero length
+       stack  → demand-zero, initially zero length"]
+    Map --> Shared["3. Map shared regions (e.g. libc.so) via mmap,
+    pointing at physical pages ALREADY IN RAM if another
+    process has libc loaded already"]
+    Shared --> PC["4. Set the Program Counter to the ELF entry point"]
+    PC --> Start["5. Jump to that address and start executing —
+    but NOT ONE PAGE OF ACTUAL CODE HAS BEEN
+    LOADED INTO PHYSICAL MEMORY YET!"]
+    Start --> Fault["6. CPU tries to fetch the very first instruction
+    → that page's PTE is invalid → PAGE FAULT
+    → OS reads JUST THAT ONE 4 KB PAGE off disk into RAM
+    → PTE updated, instruction re-executed, now succeeds"]
+    Fault --> Demand["7. Every subsequent NEW page (more code,
+    global data, first heap allocation, first stack push
+    past what's already resident) repeats step 6 —
+    this is DEMAND PAGING: nothing loads until it's touched"]
+```
+
+**Why do it this way instead of loading everything up front?**
+- Programs (think: a huge application with many rarely-used code paths — a full spreadsheet app, a giant game) may be gigabytes on disk, but any single run only ever touches a small fraction of that code. Loading it all would waste enormous time and RAM for pages that might *never* be used this run.
+- It's exactly the same "only build the branch you actually use" principle as multi-level page tables (Section 8) — just applied to *loading*, not to *table structure*.
+
+### 10.3 The call stack — what actually happens on every function call
+
+The **stack** region isn't one big undifferentiated blob — it's built from **stack frames**, one per currently-active function call, stacked on top of each other. This is where local variables, function arguments, and return addresses physically live during execution.
+
+```mermaid
+flowchart TD
+    subgraph StackGrowth ["Stack grows DOWN toward lower addresses"]
+    direction TB
+        F1["main()'s stack frame
+        - main's local variables
+        - saved %rbp (caller's frame pointer)
+        - return address into libc's startup code"]
+        F2["foo()'s stack frame
+        (created when main() calls foo())
+        - foo's parameters / local variables
+        - saved %rbp (points back to main's frame)
+        - return address = the instruction in main() right after 'call foo'"]
+        F3["bar()'s stack frame
+        (created when foo() calls bar())
+        - bar's parameters / local variables
+        - saved %rbp (points back to foo's frame)
+        - return address = instruction in foo() right after 'call bar'
+        ◄── %rsp (stack pointer) points HERE — the current 'top' of the stack"]
+    end
+    F1 --> F2 --> F3
+```
+
+**Step by step, what the CPU does on `call` and `ret`:**
+
+```
+When main() executes:  call foo
+  1. PUSH the return address (the address of the instruction right
+     after 'call foo') onto the stack  → %rsp decreases
+  2. Jump the Program Counter to foo's first instruction
+
+Inside foo(), its prologue typically does:
+  3. PUSH the old %rbp (caller's frame pointer) onto the stack
+  4. Set %rbp = current %rsp    (this now marks the BASE of foo's frame)
+  5. Subtract from %rsp to reserve space for foo's own local variables
+     (this is literally what "allocates" foo's locals — no malloc involved)
+
+When foo() executes:  ret
+  6. Restore %rsp to right before the return address (pop off locals + saved %rbp)
+  7. POP the return address off the stack into the Program Counter
+     → execution resumes in main(), right where it left off
+  8. foo's entire stack frame is now considered free space —
+     its memory isn't zeroed or "deleted," it's just no longer
+     considered valid by convention; the NEXT function call
+     will simply overwrite it
+```
+
+**How this connects back to virtual memory:** every one of those pushes is an ordinary **write** to the stack's demand-zero region (Section 10.1). The very first time a deeply recursive or deeply-nested call sequence pushes past the *lowest* stack address the OS has ever backed with a real physical page, that push triggers **exactly the page-fault sequence from Section 12** (`int x = 10;`'s trace) — the OS notices the write falls inside the stack's `vm_area_struct`, allocates a fresh zeroed physical page, updates the PTE, and lets the push succeed. This is precisely how your stack appears to have virtually unlimited room to grow, one page at a time, without ever having been pre-allocated in full.
+
+**Stack overflow, explained with this exact machinery:** every process's stack `vm_area_struct` has a maximum size (commonly 8 MB by default on Linux). If a push tries to extend the stack *past* that configured limit, the fault handler's check ("is this address inside a legal area?") fails — there's no room left to grow this vm_area — and the result is a **segmentation fault**, not an ordinary demand-zero page fault. This is the same fork in the road from Section 6's fault-classification flowchart, just triggered by runaway recursion instead of a stray pointer.
+
+---
+
 
 ## 11. Copy-on-write (COW) — how `fork()` avoids copying gigabytes
 
