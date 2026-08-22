@@ -97,6 +97,76 @@ we want to WRITE to 0xA3F
 
 ---
 
+## 12. FULL WORKED EXAMPLE #1 — tracing `int x = 10;` (a WRITE, first touch)
+
+```cpp
+int x = 10;   // x is a local variable — lives on the STACK
+              // (a private, demand-zero region, Section 10)
+```
+
+Say the compiler assigns `x` the virtual address `0x00007fff'a000'1a34`, and this is the **very first time** this stack page has ever been touched.
+
+```
+1.  CPU executes:  MOV [0x00007fffa0001a34], 10
+2.  Split VA:  VPN = upper 36 bits,  VPO = 0xA34 (lower 12 bits)
+3.  Check L1 TLB for this VPN → MISS (first touch, nothing cached)
+4.  Walk 4-level page table via CR3 → PML4 → PDPT → PD → PT
+5.  Final-level PTE: Valid bit = 0
+       → this stack page has NEVER been backed by real physical memory
+6.  PAGE FAULT raised
+7.  OS fault handler: checks vm_area_struct — is this address inside the STACK region? YES, legal.
+8.  This is a DEMAND-ZERO page (no file backs it).
+       OS finds a free physical frame, fills it with ZEROS.
+9.  OS updates the PTE: valid=1, PPN = new frame, R/W=1 (writable — it's stack memory)
+10. OS ALSO loads this new translation into the TLB
+11. Faulting instruction RESTARTS FROM SCRATCH
+12. CPU re-issues the SAME virtual address
+13. Check TLB again → HIT this time (just installed in step 10)!
+       Get PPN directly, no page-table walk needed.
+14. Combine PPN + VPO = Physical Address
+15. Check L1 d-cache at this physical address → MISS (freshly zeroed page never cached)
+16. Fetch the 64-byte cache line containing this address from DRAM (~200 cycles)
+17. THE ACTUAL WRITE HAPPENS: value 10 is stored at offset 0xA34 within this cache line, in L1
+18. Cache line marked DIRTY (differs from what's in DRAM now)
+19. Instruction complete. x now holds 10 — ONLY in L1 cache (and eventually DRAM).
+       NOTHING has been written to disk yet.
+```
+
+### State of every layer after this ONE instruction
+
+| Layer | State after `x = 10` |
+|---|---|
+| **TLB** | Valid VPN→PPN translation cached — next nearby stack access is a TLB hit |
+| **Page table (PTE)** | valid=1, points to the new physical frame, R/W=1 |
+| **L1 cache** | Holds the 64-byte line containing `x`, marked **dirty**, value 10 at the right offset |
+| **DRAM** | Still holds *old* content until the dirty line eventually gets evicted/flushed (write-back, Section 2) |
+| **Disk / swap** | Untouched. May *never* be touched if this stack frame is popped before eviction pressure forces it |
+
+### If this had instead been a write to a **copy-on-write** page
+
+Steps 5–8 change: the PTE would already be **valid** (page exists, cached, shared) but marked **read-only**. The fault raised is a **protection fault**, not a not-present fault, and the handler's job is "allocate new frame, copy contents, repoint PTE, mark read-write" instead of "zero-fill a new frame." Same overall shape (fault → handler → fix PTE → restart), different specific repair — which is exactly why the fault handler must check *which kind* of fault occurred (Section 6) before deciding what to do.
+
+---
+
+## 13. FULL WORKED EXAMPLE #2 — tracing `int y = x;` (a READ, then a WRITE, in the same instruction)
+
+Now assume: the page containing `x` is **already TLB-cached and dirty in L1** (from Example 1). The page that will hold `y` is a **brand-new, never-touched** stack slot.
+
+```cpp
+int y = x;   // READ x, WRITE the value into a NEW variable y
+```
+
+### Reading x (the source)
+
+```
+1. CPU issues x's virtual address
+2. Split VA → VPN_x + VPO_x
+3. Check TLB for VPN_x → HIT (installed during Example 1) — no table walk needed!
+4. Combine PPN_x + VPO_x = Physical Address of x
+5. Check L1 cache at that address → HIT (line is already resident, dirty, from Example 1)
+6. Return the value 10 to the CPU — fast path, both TLB and cache hit
+```
+
 ### Writing y (the destination — brand new page)
 
 ```
@@ -122,6 +192,7 @@ we want to WRITE to 0xA3F
 
 Same mechanism, same diagram — but locality (or the total lack of it) determines which branches get taken.
 
+---
 
 ## The one-paragraph version
 
