@@ -594,6 +594,52 @@ When foo() executes:  ret
 
 ---
 
+### 10.4 Zooming all the way OUT: the complete machine, hardware vs. software
+
+Every mechanism covered so far (page tables, TLB, cache, page faults) is a piece of one bigger machine. Here's the whole thing assembled in one picture — CPU internals (registers, ALU, call stack pointer), the MMU (CR3, TLB, page-table walker), the L1/L2/L3 cache hierarchy, RAM organized into 4 KB pages, and disk — with **hardware** (solid blue), **software** (dashed orange, the OS), and **hybrid data structures** (green — the page table: bytes that live in hardware RAM, but whose format and content are entirely defined and maintained by OS software) clearly separated:
+
+<img width="2200" height="1467" alt="full_system_architecture" src="https://github.com/user-attachments/assets/6a01123f-55fb-4dfc-a183-6b3c5c690331" />
+
+
+**How to read this:**
+- **Blue, solid border = hardware.** The CPU chip (registers, ALU, bus interface), the MMU (CR3 register, TLB, and the page-table-walking logic that automatically walks the 4-level tree on a TLB miss), all three cache levels, RAM, and the disk itself are all real silicon (or magnetic/flash media). None of this is "code" — it's built into the chip and cannot be changed by any program.
+- **Orange, dashed border = software.** The Page Fault Handler, the Virtual Memory Manager (victim selection, eviction policy), the Scheduler (the thing that actually writes a new value into CR3 on every context switch), and the swap/file-system logic that knows *where* on disk a given page lives — these are all just code, part of the operating system kernel, running on the very same CPU hardware they manage.
+- **Green = a data structure, not a device.** The page table itself is neither purely hardware nor purely software — it is ordinary bytes sitting in RAM (hardware-owned storage), but its *layout* (how many levels, how many bits per level, what the flag bits mean) is defined by the CPU's architecture, and its *contents* (which VPN maps to which PPN, right now, for this process) are written by OS software. The MMU (hardware) only ever *reads* it; the OS (software) is the only thing that ever *writes* it.
+- **Where your call stack actually lives:** `%rsp`/`%rbp` are just two hardware registers holding numbers (addresses) — that part is hardware. But the actual bytes of your stack frames (Section 10.3) are ordinary data sitting in RAM pages, get cached in L1/L2/L3 exactly like any other data, and can even be demand-paged out under memory pressure. The "call stack" is a *convention* the hardware and compiler agree to follow, not a separate physical structure.
+
+*(This is deliberately a first pass — as we go further, more components will get added to this same picture: an interrupt controller, DMA engines, hardware prefetchers, and so on.)*
+
+### 10.5 Two totally different transfer sizes for ONE request — the part that trips people up
+
+You now know two separate facts that sound like they should contradict each other:
+- **Section 3**: pages are 4 KB, and the whole point of paging is that translation happens at 4 KB granularity.
+- **Section 4.5 / 9**: cache lines are 64 bytes, and the whole point of caching is that *data* moves in 64-byte chunks.
+
+So when you write `MOV byte_at[0xA3F]`, which is it — do you get 4 KB, or 64 bytes? **The honest answer is: both, at two different layers, doing two different jobs.**
+
+<img width="2000" height="1216" alt="two_granularities" src="https://github.com/user-attachments/assets/8ee99c6c-d07d-4efb-861a-f843a87eb249" />
+
+
+**Stage 1 — Disk ↔ RAM moves a whole 4 KB PAGE (only when necessary).**
+This only happens on a **page fault** (Section 6): if the page holding `0xA3F` isn't resident in RAM yet, the OS reads the *entire* surrounding 4,096-byte page off disk into a free physical frame — not just the handful of bytes you asked for. This is the page-table/VM layer, and its granularity is fixed by the page size chosen at design time (Chapter 2, Part 2, Tier 4).
+
+**Stage 2 — RAM ↔ L1 cache moves only a 64-byte LINE (on every single access).**
+Completely independently of whether Stage 1 needed to run at all, the CPU's cache hierarchy is watching physical addresses at its *own*, much finer granularity. Once the physical address for `0xA3F` is known (whether from a TLB hit or a fresh table walk), the cache checks whether the *64-byte line* containing that address is already resident. If not, it fetches **just that one 64-byte line** — a small slice of the 4 KB page — from RAM into L1 (Section 4.5's cache-line math: 64 lines make up one page). The other 63 lines of that page stay sitting in RAM, untouched by the cache, until something else in your program happens to touch them too.
+
+**Put together, for `int x = *(int*)0xA3F;`:**
+```
+1. Split 0xA3F → VPN=0, offset=0xA3F
+2. TLB / page-table lookup resolves VPN → PPN
+     (if the page wasn't resident: FULL 4,096-byte page fault-in from disk first)
+3. Combine PPN + offset → physical address
+4. L1 cache lookup at that physical address
+     (if not cached: fetch ONLY the 64-byte line containing this address from RAM)
+5. Pull the specific 4 bytes of the int out of that 64-byte line into the CPU register
+```
+The 4 KB transfer (Stage 1) is the exception — it happens at most once per page, ever (until eviction). The 64-byte transfer (Stage 2) happens routinely, on every cache miss, for as long as the program runs. Two different mechanisms, two different sizes, solving two different problems: Stage 1 minimizes *how often* you pay disk latency; Stage 2 minimizes *how often* you pay DRAM latency, on top of memory that's already resident.
+
+---
+
 
 ## 11. Copy-on-write (COW) — how `fork()` avoids copying gigabytes
 
