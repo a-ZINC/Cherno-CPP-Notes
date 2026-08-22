@@ -97,6 +97,32 @@ we want to WRITE to 0xA3F
 
 ---
 
+### Writing y (the destination — brand new page)
+
+```
+7.  CPU issues y's virtual address
+8.  Split VA → VPN_y + VPO_y
+9.  Check TLB for VPN_y → MISS (never touched before)
+10. Walk 4-level page table → final PTE: Valid = 0
+11. PAGE FAULT → handler checks vm_area_struct → inside STACK region, legal
+12. Demand-zero page: allocate a fresh frame, zero-fill it
+13. Update PTE: valid=1, PPN = new frame, R/W=1
+14. Load translation into TLB
+15. RESTART the instruction from scratch
+16. Re-issue VA for y → TLB HIT this time
+17. Combine PPN_y + VPO_y = Physical Address
+18. L1 cache check → MISS (freshly zeroed page never cached) → fetch 64-byte line from DRAM
+19. THE WRITE HAPPENS: value 10 (read from x) is stored at y's offset in this new cache line
+20. Line marked DIRTY
+```
+
+**Why the read and the write take completely different paths through the *same* diagram, one instruction apart:**
+- **Reading `x`** hits *everywhere* (TLB hit, cache hit) because it's re-touching memory from the immediately preceding instruction — pure temporal locality.
+- **Writing `y`** misses *everywhere* (TLB miss → page fault → cache miss) because it's the very first touch of a page that has never been backed by physical memory at all. It must go through the *entire* demand-zero-page machinery of Section 6 before the write can even happen.
+
+Same mechanism, same diagram — but locality (or the total lack of it) determines which branches get taken.
+
+
 ## The one-paragraph version
 
 **Read:** split the address → look in the TLB → if missing, walk the page table in RAM →
