@@ -1,6 +1,9 @@
 # Virtual Memory — Complete, Visual Notes
 ### From "what is an address" to tracing `int x = 10;` through real hardware
 
+<img width="2000" height="1322" alt="page_granularity_zoom" src="https://github.com/user-attachments/assets/7a9c94b6-0eed-4e02-a785-fd2b71dc1f98" />
+
+
 ---
 
 ## 0. The one rule to hold in your head the whole time
