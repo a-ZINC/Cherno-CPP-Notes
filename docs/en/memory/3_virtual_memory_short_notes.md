@@ -142,6 +142,13 @@ Say the compiler assigns `x` the virtual address `0x00007fff'a000'1a34`, and thi
 | **DRAM** | Still holds *old* content until the dirty line eventually gets evicted/flushed (write-back, Section 2) |
 | **Disk / swap** | Untouched. May *never* be touched if this stack frame is popped before eviction pressure forces it |
 
+
+If another thread (running on a different core) tries to read or write the variable `x`:
+
+1. **Cache Coherency Protocol (like MESI / MOESI):** The CPU cores use a hardware coherency protocol. When Core B wants `x`, its cache controller sends a request across the interconnect.
+2. **State Transition:** Core A's L1 cache sees that another core wants the data it has marked as **Modified (Dirty)**. Core A must intercept this request. It changes its own cache line state to **Shared** (or **Invalid** if Core B is writing to it) and flushes the updated value (`10`) out of its L1/L2 cache hierarchy.
+3. **Updating RAM / L3:** Depending on the exact cache architecture and write-back policy, the updated value is typically written down to the shared **L3 cache** (or directly to **DRAM** depending on whether it's an exclusive or inclusive cache hierarchy) so that Core B can fetch the correct, up-to-date value of `10`.
+
 ### If this had instead been a write to a **copy-on-write** page
 
 Steps 5–8 change: the PTE would already be **valid** (page exists, cached, shared) but marked **read-only**. The fault raised is a **protection fault**, not a not-present fault, and the handler's job is "allocate new frame, copy contents, repoint PTE, mark read-write" instead of "zero-fill a new frame." Same overall shape (fault → handler → fix PTE → restart), different specific repair — which is exactly why the fault handler must check *which kind* of fault occurred (Section 6) before deciding what to do.
