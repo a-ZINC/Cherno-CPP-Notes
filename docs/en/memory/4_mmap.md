@@ -461,6 +461,30 @@ Fragmentation cost for THIS scenario (one big, long-lived, 256 MB block):
 
 **Why huge pages are an unambiguous win here, and not everywhere:** this allocation is large, single, long-lived, and touched constantly — Effect 4's fragmentation danger simply doesn't apply (both page sizes divide 256 MB evenly), so you get all of Effects 1–3's upside for free. That's *exactly* why `project5a_tlb_hugepages.cpp` (Tier 4.1) is expected to show a real, measurable ns/hop improvement with `MAP_HUGETLB`.
 
+Almost! Let's clear up that final piece about physical RAM to make sure your mental model is 100% locked in.
+
+### The Correction on Physical RAM
+
+In physical RAM, we do **not** just give 512 entries of 4 KB.
+
+If we did that, they wouldn't be contiguous, and the CPU/MMU wouldn't be able to use a huge page. Instead, for a 2 MB huge page:
+
+1. **Virtual Side:** You get a single, continuous 2 MB virtual memory range.
+2. **TLB Side:** The TLB caches that entire 2 MB range using **just 1 entry** instead of 512 entries.
+3. **Physical RAM Side:** The physical RAM is actually backed by a **single, unbroken, contiguous block of 2 MB hardware RAM** (which the kernel allocated by locking 512 physical frames together).
+
+---
+
+### The Final Summary Checklist
+
+| Component | Standard (4 KB) | Huge Page (2 MB) |
+| --- | --- | --- |
+| **Virtual Page Size** | 4 KB | 2 MB |
+| **TLB Entries Needed for 2 MB** | **512 entries** | **1 entry** (Massive TLB reach!) |
+| **Physical RAM Backing** | Any scattered 4 KB physical frames | **1 contiguous 2 MB block** of physical RAM |
+
+You've successfully connected virtual addresses, TLB caching, kernel page tables, and physical RAM hardware constraints!
+
 ### The general decision rule, as a flowchart
 
 ```mermaid
