@@ -188,6 +188,84 @@ sequenceDiagram
 
 ---
 
+Here are your clean, beautifully formatted Markdown notes for this section. You can save this directly into your repository!
+
+---
+
+# Chapter 1: The Anatomy of `mmap` — Virtual Memory, Shared Regions, and Process IPC
+
+## 1. Where Does `mmap` Live in Virtual Memory?
+
+When you call `mmap()`, the memory **does not** come from the traditional heap (`malloc`/`new`) or the stack.
+
+Instead, the kernel carves out space in a dedicated zone of your virtual address space known as the **Memory Mapped Region (mmap area)**.
+
+### The 64-bit Process Layout (Low to High Addresses)
+
+```text
+0x0000000000000000  +---------------------------+
+                    |           TEXT            | <-- Compiled machine code (.text)
+                    +---------------------------+
+                    |           DATA            | <-- Global and static variables
+                    +---------------------------+
+                    |            BSS            | <-- Uninitialized global variables
+                    +---------------------------+
+                    |           HEAP            | <-- Traditional dynamic memory (malloc)
+                    |            ...            |     Grows UP towards high addresses
+                    |            VVV            |
+                    +---------------------------+
+                    |    MMAP REGION (ARBITRARY)| <-- **mmap() allocations land here!**
+                    |   (Shared or Private)     |     Grows DOWN towards low addresses
+                    |            ^^^            |
+                    |            ...            |
+                    +---------------------------+
+                    |           STACK           | <-- Local variables, function call frames
+                    |            VVV            |     Grows DOWN towards low addresses
+0x7fffffffffff      +---------------------------+
+
+```
+
+---
+
+## 2. How `MAP_SHARED` Crosses Process Boundaries (IPC)
+
+If two independent processes want to share data, they don't need to share the same virtual address. Each process gets its own unique pointer inside its own mmap region, but the kernel maps both virtual addresses to the **exact same physical RAM page**.
+
+```mermaid
+sequenceDiagram
+    participant PA as Process A
+    participant K as Linux Kernel
+    participant PB as Process B
+
+    Note over PA,PB: Step 1: Establishing the Connection
+    PA->>K: open("/tmp/shared_file", O_RDWR)
+    K-->>PA: Returns File Descriptor (fd = 3)
+    
+    PA->>K: mmap(..., MAP_SHARED, fd=3)
+    K-->>PA: Returns Virtual Address A (e.g., 0x7f8a...)
+    
+    Note over PB: Process B opens the SAME file
+    PB->>K: open("/tmp/shared_file", O_RDWR)
+    K-->>PB: Returns File Descriptor (fd = 3 in PB's table)
+    
+    PB->>K: mmap(..., MAP_SHARED, fd=3)
+    K-->>PB: Returns Virtual Address B (e.g., 0x7f4b...)
+
+    Note over PA,PB: Step 2: The Hardware Reality
+    K->>PA: Process A's PTE points to Physical Page X
+    K->>PB: Process B's PTE points to Physical Page X (SAME RAM!)
+
+```
+
+---
+
+## 3. Key Takeaways & Rules of `mmap` IPC
+
+* **Independent Virtual Addresses:** Process A and Process B can have completely different pointer values (e.g., `0x7f8a...` vs `0x7f4b...`). The CPU's MMU handles the translation independently for each.
+* **Shared Physical Frame:** Underneath the hood, both processes point to the *exact same physical RAM frame* in the kernel's page cache. A write by Process A is **instantly visible** to Process B via an ordinary memory read (`MOV` instruction) — **zero system calls, zero data copies**.
+* **The Connection Requirement:** To share memory, processes must map the same underlying resource, usually by opening the **same file path** on disk or using POSIX shared memory (`shm_open`).
+* **The Synchronization Catch:** Because there are no kernel locks buffering your communication, simultaneous writes to the same shared memory address cause data races. You must use process-shared synchronization primitives (like atomic operations or mutexes) to coordinate safely.
+
 # TIER 2 — PRO: IPC, and the full big-page-vs-small-page scenario
 
 ## 2.1 `MAP_SHARED` as inter-process communication
@@ -308,6 +386,43 @@ A 10 KB buffer, mapped at different page sizes:
              → 2,097,152 bytes reserved, ~2,087,000 wasted
              → 99.5% waste!
 ```
+
+You hit the absolute nail on the head. That insight is the exact reason why memory allocators (`malloc`, `jemalloc`, `tcmalloc`) exist in the first place!
+
+Let's break down why your realization is 100% correct and weave it into the notes.
+
+---
+
+### The `mmap` Granularity Trap: Why Custom Allocators Exist
+
+When you call `mmap()`, the kernel **cannot** give you just 10 bytes or 10 KB. The MMU (Memory Management Unit) operates on fixed page boundaries.
+
+* If you ask `mmap()` for **10 KB**, the kernel rounds it up to the nearest page size. On standard systems, that means it hands you **3 full pages (12 KB)**.
+* If you use **Huge Pages (2 MiB)** for that same 10 KB request, the kernel still hands you a full 2 MiB block.
+
+#### Why this destroys peak memory utilization:
+
+If your application makes thousands of small allocations (like allocating small strings, temporary objects, or node structs), and every single one of them goes straight to `mmap()`, you suffer from catastrophic **internal fragmentation**.
+
+* You requested a tiny fraction of memory, but paid the full page-size tax for every single allocation.
+* Your process's **Resident Set Size (RSS)**—the actual physical RAM consumed—spikes massively, even though your program is mostly storing empty, unused padding space.
+
+#### Enter Memory Allocators (`malloc`, `tcmalloc`, `jemalloc`)
+
+This is precisely why `malloc()` doesn't call `mmap()` for every single tiny object. Instead:
+
+1. **The Big Grab:** The memory allocator calls `mmap()` *once* to request a massive chunk of virtual memory (e.g., several megabytes or gigabytes).
+2. **The Fine-Grained Split:** The allocator acts as a smart manager, slicing that massive `mmap` block into tiny 16-byte, 32-byte, or 1024-byte chunks to hand out to your C++ code.
+3. **High Utilization:** By packing thousands of small variables tightly into those pages, it eliminates internal fragmentation and keeps your peak memory utilization lean and clean.
+
+---
+
+#### The Math of Page-Size Waste
+
+* **4 KiB pages:** Allocating a 10 KB buffer requires $\lceil 10\text{KB} / 4\text{KB} \rceil = 3$ pages $\rightarrow 12\text{KB}$ reserved ($2\text{ KB}$ internal waste).
+* **2 MiB pages:** Allocating that same 10 KB buffer forces the kernel to assign a full 2 MiB huge page $\rightarrow 2,097,152\text{ bytes}$ reserved, with **~2,087,000 bytes wasted** ($99.5\%$ inefficiency!).
+
+> **The `mmap()` Bottleneck:** Because `mmap()` returns memory strictly in page-sized chunks, bypassing it for every small variable destroys **peak memory utilization**. This exact hardware limitation is why user-space memory allocators (`malloc`) exist—they take large chunks from `mmap` and chop them up efficiently for your daily code.
 
 ### The full worked scenario — matching the actual `project5a` benchmark (256 MB working set)
 
