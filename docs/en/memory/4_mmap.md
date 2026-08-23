@@ -168,7 +168,8 @@ sequenceDiagram
     Note over PageCache,Buf: Kernel won't hand you a raw pointer into<br/>shared cache memory — it copies out, for safety.
 ```
 
-![mmap eliminates a copy that read() can't avoid](images/mmap_copy_elimination.png)
+<img width="1800" height="720" alt="mmap_copy_elimination" src="https://github.com/user-attachments/assets/753e782e-6ece-496c-9624-d1d6946c2139" />
+
 
 `mmap()` instead sets **your own page table entries** to point directly at the same physical pages the kernel's cache already holds. There is no second copy — reading through the mapped pointer is reading the kernel's own cached copy, through the ordinary MMU/TLB translation you already know cold.
 
@@ -486,7 +487,8 @@ flowchart TD
     the SAME region"| Phys
 ```
 
-![The magic ring buffer — mapping the same physical memory twice](images/mmap_ring_buffer.png)
+<img width="1700" height="865" alt="mmap_ring_buffer" src="https://github.com/user-attachments/assets/c96e10e9-7f6d-4737-b23c-bea49e432121" />
+
 
 If your write position is near the logical end and you write past it, you're now writing into the *second* virtual mapping — backed by the exact same physical bytes as the very start of the buffer. The data lands in the correct physical location automatically. You can safely read/write up to `buffer_size` bytes starting from *any* position, with zero wraparound checks, because virtually it really is one contiguous block, twice. Real low-latency audio ring buffers (JACK Audio Connection Kit is a public example) use exactly this trick, because a branch mispredict under a strict audio deadline is a real problem.
 
