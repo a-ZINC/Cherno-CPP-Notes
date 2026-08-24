@@ -850,6 +850,48 @@ void part_b() {
 
 int main() { part_a(); part_b(); return 0; }
 ```
+```
+Hello boss
+------- PAGE FAULT WRITE EXAMPLE ---------
+[0]: before -> 157, after -> 158, value: , time: 7300ns
+[1]: before -> 161, after -> 162, value: , time: 17500ns
+[2]: before -> 162, after -> 163, value: , time: 1500ns
+[3]: before -> 163, after -> 164, value: , time: 1300ns
+[4]: before -> 164, after -> 165, value: , time: 2900ns
+[5]: before -> 165, after -> 166, value: , time: 1500ns
+[6]: before -> 166, after -> 167, value: , time: 1400ns
+[7]: before -> 167, after -> 168, value: , time: 1400ns
+[8]: before -> 168, after -> 169, value:, time: 1400ns
+[9]: before -> 169, after -> 170, value:        , time: 1500ns
+[no fault]: before -> 170, after -> 170, value: *, time: 100ns
+------- PAGE FAULT READ EXAMPLE ---------
+[0]: before -> 170, after -> 171, value: , time: 3600ns
+[1]: before -> 171, after -> 172, value: , time: 3100ns
+[2]: before -> 172, after -> 173, value: , time: 3500ns
+[3]: before -> 173, after -> 174, value: , time: 3800ns
+[4]: before -> 174, after -> 175, value: , time: 3000ns
+[5]: before -> 175, after -> 176, value: , time: 3300ns
+[6]: before -> 176, after -> 177, value: , time: 3400ns
+[7]: before -> 177, after -> 178, value: , time: 3500ns
+[8]: before -> 178, after -> 179, value:, time: 2200ns
+[9]: before -> 179, after -> 180, value:        , time: 1700ns
+[no fault]: before -> 180, after -> 180, value: *, time: 100ns
+------- COW ISOLATION EXAMPLE ---------
+[0]: before -> 12, after read -> 16, after write -> 17, value: , read time: 1300ns, write time: 3100ns
+[1]: before -> 35, after read -> 35, after write -> 36, value: , read time: 300ns, write time: 5200ns
+[2]: before -> 36, after read -> 36, after write -> 37, value: , read time: 300ns, write time: 3100ns
+[3]: before -> 37, after read -> 37, after write -> 38, value: , read time: 200ns, write time: 2800ns
+[4]: before -> 38, after read -> 38, after write -> 39, value:, read time: 200ns, write time: 2800ns
+[5]: before -> 39, after read -> 39, after write -> 40, value:
+, read time: 300ns, write time: 2700ns
+[6]: before -> 40, after read -> 40, after write -> 41, value:
+                                                               , read time: 300ns, write time: 2600ns
+[7]: before -> 41, after read -> 41, after write -> 42, value: , read time: 300ns, write time: 6000ns
+[8]: before -> 42, after read -> 42, after write -> 43, value: , read time: 400ns, write time: 6200ns
+[9]: before -> 43, after read -> 43, after write -> 44, value: , read time: 400ns, write time: 6200ns
+[parent] All 10pages UNCHANGED.COW isolation confirmed.
+[Scope]: 0.0020996 seconds
+```
 
 **What each part proves, expressed as expected numbers:**
 
