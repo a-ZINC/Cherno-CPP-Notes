@@ -3,6 +3,9 @@
 **Rule to hold onto:** every access is really `translate → check cache → touch RAM/disk`.
 Translation always happens the same way. Only the LAST step differs between a **read** and a **write**.
 
+<img width="1408" height="768" alt="Gemini_Generated_Image_4s5ubn4s5ubn4s5u" src="https://github.com/user-attachments/assets/88a50494-cc7a-47e5-afc4-3db858839bf2" />
+
+
 ---
 
 ## CASE 1 — READ: we want data from `0xA3F`
