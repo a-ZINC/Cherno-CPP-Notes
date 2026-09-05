@@ -124,6 +124,196 @@ Part 0 built `CALL`/`RET` entirely out of "push return address, jump, later pop 
 2. **Processor state beyond just the address gets pushed too** — condition codes (the CPU's internal flags register) are saved as well, because the kernel handler is about to run its own code, which will inevitably clobber those flags, and your process needs them intact when it resumes.
 3. **The push happens onto the *kernel's* stack, not your process's stack.** This is the detail people miss most often. Your `CALL` in Part 0 pushed onto whatever stack your program was already using. An exception switches to an entirely separate, kernel-owned stack before pushing anything — because your user-mode stack might itself be the *reason* the exception happened (a stack overflow, for instance), and the kernel can't safely trust it.
 
+Every process has two entirely separate memory stacks: a **process stack** (user stack) for your application code, and a **kernel stack** reserved exclusively for when that process enters the kernel.
+
+### Process Stack vs. Kernel Stack
+
+* **Process Stack (User Stack):** This is the memory region allocated in your virtual address space to hold local variables, function parameters, and return addresses for your own code (like the stack you built in Part 0). It is fully readable and writable by your program.
+* **Kernel Stack:** The operating system allocates a separate, highly protected stack page in kernel memory *for every single process*. When an exception or system call occurs, the CPU hardware automatically switches the stack pointer (`%rsp`) to point to this kernel stack *before* pushing anything.
+
+This separation is a critical security feature. If your user-mode code corrupts its own stack (such as via a stack overflow or buffer overflow), it cannot overwrite kernel return addresses or hijack the operating system's execution flow.
+
+```mermaid
+graph TD
+    subgraph VAS ["Process Virtual Address Space (x86-64 Linux)"]
+        subgraph KSPACE ["Kernel Space (Ring 0 — Inaccessible to User Code)"]
+            KS["<b>Kernel Stack</b><br/>(Dedicated to *this* process; active only during exceptions/syscalls)"]
+            KT["Kernel Code, Data Structures (task_struct), & Page Tables"]
+        end
+
+        subgraph USPACE ["User Space (Ring 3 — Accessible to User Code)"]
+            US["<b>Process Stack (User Stack)</b><br/>(Grows downward; used by application functions)"]
+            MM["Memory Mappings / Shared Libraries (mmap)"]
+            HP["Heap<br/>(Grows upward)"]
+            DB["Data & BSS (Global/Static Variables)"]
+            TX["Text (Compiled Machine Code)"]
+        end
+    end
+```
+
+<img width="2000" height="1322" alt="639676313-7a9c94b6-0eed-4e02-a785-fd2b71dc1f98" src="https://github.com/user-attachments/assets/732057ed-1fc4-45ee-a711-6749c9b957b7" />
+
+---
+
+### Exception Stack Switch Sequence
+
+```mermaid
+sequenceDiagram
+    participant User as User Process Code
+    participant CPU as CPU Hardware
+    participant UStack as Process Stack (User)
+    participant KStack as Kernel Stack (Kernel)
+    participant Handler as Exception Handler
+
+    Note over User,UStack: Running in User Mode (CPL=3)<br/>RSP points to Process Stack
+    User->>CPU: Exception/Syscall triggers
+    Note over CPU: 1. Hardware reads Task State Segment (TSS)<br/>to find Kernel Stack address<br/>2. Atomically switch RSP to Kernel Stack
+    CPU->>KStack: Push user RFLAGS, CS, RIP (return address), Error Code
+    CPU->>Handler: Jump to table entry (Kernel Mode, CPL=0)
+    Note over Handler,KStack: Handler executes securely using Kernel Stack
+    Handler->>CPU: `iret` (Interrupt Return) instruction
+    Note over CPU: 1. Pop RIP, CS, RFLAGS from Kernel Stack<br/>2. Restore original RSP back to Process Stack<br/>3. Flip mode bit back to User Mode
+    CPU->>User: Execution resumes seamlessly
+
+```
+
+---
+
+### Code and Assembly Contrast: `CALL` vs. Exception
+
+To see the difference in practice, look at what happens at the instruction level when a user function executes a standard `CALL` versus when the hardware handles an exception.
+
+### Side-by-Side: Ordinary `CALL` vs. Hardware Exception (`syscall`)
+
+---
+
+### Path 1: The Ordinary Function `CALL` (User Stack Only)
+
+When your code executes a standard function call, everything stays in user space (Ring 3). There is no privilege change, and the stack pointer (`%rsp`) never leaves your process stack.
+
+#### Code & Assembly
+
+```cpp
+void foo() {
+    int x = 42; 
+}
+int main() {
+    foo(); 
+}
+
+```
+
+```asm
+main:
+    call foo             ; 1. Pushes return address to user stack, jumps to foo
+    ...
+foo:
+    push %rbp            ; 2. Saves old base pointer on user stack
+    mov  %rsp, %rbp      ; 3. Sets up foo's stack frame
+    movl $42, -4(%rbp)   ; 4. Stores local variable x
+    leave                ; 5. Tears down frame
+    ret                  ; 6. Pops return address into %rip, returns to main
+
+```
+
+#### Visual: The Process Stack (User Space)
+
+```text
+  HIGH MEMORY (e.g., 0x7fff0000)
+  +-----------------------------------+
+  | main()'s variables / stack frame  |
+  +-----------------------------------+
+  | Return Address (to main)          |  <-- Pushed by `call foo`
+  +-----------------------------------+
+  | Saved %rbp (caller's frame)       |  <-- Pushed by `push %rbp` inside foo
+  +-----------------------------------+
+  | Local variable x (42)             |  <-- %rsp points here during foo() execution
+  +-----------------------------------+
+  LOW MEMORY
+
+```
+
+#### Step-by-Step Execution
+
+1. **`call foo`**: CPU pushes the return address (`%rip`) onto the **Process Stack**. `%rsp` decrements.
+2. **`push %rbp`**: Software convention saves the previous base pointer onto the same **Process Stack**.
+3. **Execution**: Code runs in **Ring 3 (User Mode)**. Condition codes (`%rflags`) are *not* saved.
+4. **`ret`**: CPU pops the return address off the **Process Stack** into `%rip`. `%rsp` restores. Privilege level remains unchanged.
+
+---
+
+### Path 2: The Hardware Exception / Syscall (User Stack $\to$ Kernel Stack)
+
+When a `syscall` instruction executes, a page fault hits, or a timer interrupt fires, the CPU hardware intercepts execution, switches stacks, and elevates privileges to Ring 0.
+
+#### Code & Assembly
+
+```cpp
+// User space code triggering a system call
+asm volatile("mov $1, %rax; syscall");
+
+```
+
+```asm
+    mov $1, %rax         ; Syscall number for write
+    syscall              ; TRAP instruction -- hardware takes over instantly
+    ; === CPU HARDWARE INTERCEPTION (Ring 3 -> Ring 0) ===
+    ; 1. Atomically reads Task State Segment (TSS) to find Kernel Stack
+    ; 2. Switches %rsp to point to the PROCESS'S KERNEL STACK
+    ; 3. Pushes user-mode state onto the Kernel Stack
+    ; 4. Flips mode bit to Ring 0 and jumps to exception table handler
+
+```
+
+#### Visual: The Dual-Stack Transition
+
+```text
+[ Process Stack (User Space - Ring 3) ]        [ Kernel Stack (Kernel Space - Ring 0) ]
+  HIGH MEMORY                                    HIGH MEMORY
+  +-------------------------------+              +-------------------------------+
+  | User local variables          |              | (Unused / Top of Kernel Stack)|
+  | %rsp points here BEFORE       |              +-------------------------------+
+  | the syscall happens.          |              | Saved User %rsp               |  <-- Pushed by CPU
+  +-------------------------------+              +-------------------------------+
+                                                 | Saved CPU Flags (%rflags)     |  <-- Pushed by CPU
+                                                 +-------------------------------+
+                                                 | Saved Code Segment (%cs)      |  <-- Pushed by CPU
+                                                 +-------------------------------+
+                                                 | Saved Return Address (%rip)   |  <-- Pushed by CPU
+                                                 +-------------------------------+
+                                                 | %rsp switches HERE instantly  |  <-- %rsp points here in Kernel Mode
+                                                 LOW MEMORY                      LOW MEMORY
+
+```
+
+#### Step-by-Step Execution
+
+1. **The Trigger (`syscall` or Interrupt)**: The CPU detects the event. It stops user execution.
+2. **The Hardware Stack Switch**: The CPU hardware looks up the designated **Kernel Stack** for *this specific process* and changes `%rsp` to point to it. The user stack is completely abandoned.
+3. **Saving State Atomically**: The CPU hardware automatically pushes `%rip`, `%cs`, `%rflags`, and the user's `%rsp` onto the **Kernel Stack**. (Condition codes and flags are safely preserved).
+4. **Privilege Elevation**: The mode bit flips from **User Mode (Ring 3)** to **Kernel Mode (Ring 0)**.
+5. **Table Lookup & Handler**: The CPU jumps to the handler function via the exception table, executing securely inside kernel space using the **Kernel Stack**.
+6. **The Return (`sysret` / `iret`)**: When the kernel finishes, it executes a return instruction. The CPU hardware reverses the process: pops saved registers off the Kernel Stack, restores `%rsp` back to the **Process Stack**, flips back to Ring 3, and resumes user code seamlessly.
+
+When an explicit system call like `open()` is executed, the traversal mechanism differs slightly from a hardware fault because a `syscall` is an intentional **trap** (category ② from the taxonomy). Rather than indexing the CPU's primary exception table directly with a hardware-assigned number, it uses a two-stage routing process: a hardware jump followed by a software table lookup using the register value you provided.
+
+The traversal executes step by step:
+
+1. **Setting the Syscall Number and Triggering (`syscall`):** User-mode code places the specific syscall number for `open` (which is `2` on x86-64 Linux) into the `%rax` register and executes the `syscall` instruction.
+2. **The Hardware Interception & MSR Jump:** The CPU hardware catches the `syscall` instruction. It instantly switches the stack pointer (`%rsp`) to the process's **Kernel Stack**, saves the return address and CPU flags, flips the mode bit to Ring 0 (Kernel Mode), and jumps directly to a kernel entry point address pre-loaded into a special CPU hardware register (the `LSTAR` Model-Specific Register, set up when the kernel booted).
+3. **Reaching the Kernel Dispatcher:** Control is now inside kernel mode at a central entry point routine (such as `entry_SYSCALL_64`). This routine saves your user-mode registers onto the kernel stack so they aren't lost.
+4. **Using `%rax` as the Table Index:** The kernel dispatcher reads the syscall number sitting in `%rax` (`2`). It treats this number as an index into its own internal software array of function pointers—the `sys_call_table`.
+5. **Applying the Table Formula:** The kernel computes the exact address of the handler using pointer arithmetic identical in principle to the hardware formula:
+`handler_address = sys_call_table_base + (2 × 8)`
+6. **Jumping to the File System Code:** The kernel reads the 8-byte function pointer found at that table slot (which points to the kernel's actual `sys_open` implementation) and jumps to it. When `sys_open` finishes opening the file, it places the resulting file descriptor into `%rax` and executes `sysret`, restoring your user state and returning control to the instruction right after `syscall`.
+
+```c
+// Conceptual C equivalent of the kernel's internal syscall lookup
+// (Happens after the CPU hardware has already transitioned you to Ring 0)
+sys_call_t handler = sys_call_table[rax_syscall_number]; // rax = 2 for open
+long result = handler(); // Jumps to the kernel's open implementation
+
+```
 ---
 
 ## 1.6 A concrete trap, in real assembly
