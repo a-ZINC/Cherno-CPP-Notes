@@ -94,8 +94,83 @@ memcpy on raw bytes                     -> always safe, no alignment
 
 ---
 
+**`alignof`** is a query (like `sizeof`), and **`alignas`** is a command.
+
+### `alignof` (The Query)
+
+It asks the compiler: *"What is the alignment requirement (in bytes) for this type?"*
+
+```cpp
+size_t alignment = alignof(Vector4); // Returns 16
+size_t int_align = alignof(int);     // Usually returns 4
+
+```
+
+Use it when you need to dynamically check or enforce alignment in your code (like passing it into your `align_up` function).
+
+### `alignas` (The Command)
+
+It tells the compiler: *"Force this variable, array, or struct to be aligned to this specific byte boundary, even if it normally wouldn't need to be."*
+
+```cpp
+// Force a normal float array to align to 32 bytes for AVX-256
+alignas(32) float buffer[8]; 
+
+// Force a struct to be 16-byte aligned for SIMD
+struct alignas(16) Vector4 {
+    float x, y, z, w;
+};
+
+```
+
+Use it when you are declaring data structures and want to guarantee they land on safe memory boundaries automatically.
+
+---
+
+Ready to jump back to **Challenge 2**?
+*If Item #0 starts at `0x1000` and `sizeof(WeirdItem)` is 20, where does raw pointer math land Item #1, and how do you fix it with `align_up`?*
+
 ## The absolute minimum version, if you remember nothing else
 
 **`align_up(value, alignment) = (value + alignment - 1) & ~(alignment - 1)`
 — call it on every offset before you place something manually in memory,
 and default to 16 when in doubt.**
+
+
+## Memory Alignment: The Essential Notes
+
+### The Universal Formula
+
+```cpp
+inline uintptr_t align_up(uintptr_t value, size_t alignment) {
+    return (value + alignment - 1) & ~(alignment - 1);
+}
+
+```
+
+### Why Alignment Matters
+
+* **Hardware Enforcement:** SIMD instructions (SSE, AVX, AVX-512) demand strict 16-, 32-, or 64-byte alignment. Feeding them an unaligned address triggers a hardware fault (`SIGSEGV`).
+* **Performance Optimization:** Aligned memory prevents cache-line splits, allowing the CPU to fetch data in a single clock cycle without extra bus overhead.
+
+### Compiler Automation vs. Manual Intervention
+
+* **Automatic:** Standard variables, `new T`, and STL containers are automatically aligned by the compiler.
+* **Manual:** Required when bypassing the compiler—such as writing custom memory allocators, parsing raw byte buffers/network streams, doing pointer arithmetic, or using placement `new`.
+
+### The Golden Rule of Offsets
+
+> Aligning the start of a buffer **does not** automatically align what lives inside it. Every time you advance a pointer past a header or a variable-length payload, you must explicitly re-align.
+
+### The Toolkit
+
+* **`alignof(T)`**: Queries a type's alignment requirement in bytes.
+* **`alignas(N)`**: Forces the compiler to align a struct or variable to a specific byte boundary.
+* **Array Stride Formula**:
+```cpp
+size_t stride = align_up(sizeof(T), alignof(T));
+
+```
+
+
+Ensures every item in a packed array or custom pool stays safely aligned, preventing padding/size mismatches from breaking subsequent elements.
