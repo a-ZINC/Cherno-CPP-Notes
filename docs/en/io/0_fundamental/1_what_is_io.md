@@ -93,15 +93,6 @@ At this stage, only the shape matters, not the mechanism (that's Part 2-3): when
 ### ⚙️ Hardware View
 Underneath even the kernel, the "device" your I/O eventually reaches is physically separate silicon with its own clock domain: a disk controller, a network interface card (NIC), a UART for a terminal. These devices do not execute your CPU's instructions — they run their own firmware/logic at their own pace, and communicate back via **interrupts** or **DMA writes to memory** (Part 1.7-1.8). This physical separation — two independent clocks that must be reconciled — is the hardware-level reason the "gap" from the architecture diagram exists at all. It's not a software design choice; it's physics that software then has to manage.
 
-### 🧠 Memory View
-Not yet applicable in detail — this becomes concrete in Part 3 (file descriptors) and Part 16 (zero-copy), once we have real buffers and syscalls to trace. For now, just note: any time data moves from a device to your program, it eventually has to arrive in **your process's memory**, and the number of times it gets copied along the way (device → kernel buffer → your buffer, or fewer hops) is a recurring performance theme for the rest of the course.
-
-### 🔌 Syscalls / APIs
-None yet — this chapter is conceptual. First real syscalls appear in Part 2.6 and Part 3.
-
-### 💻 C++ Implementation
-None yet. First code appears in Part 3 (opening and reading a file descriptor) and Part 4 (a real blocking server).
-
 ### 🔬 Experiment
 **Predict Before Running.** No code needed for this one — just reasoning.
 
@@ -116,36 +107,12 @@ None yet. First code appears in Part 3 (opening and reading a file descriptor) a
 **(b) — fully free.** Reading from standard input with the default blocking mode causes your thread to be put to sleep by the kernel (removed from the CPU run queue entirely) until the terminal driver signals that a line is available. You can verify this yourself later (Part 4) with `top` or `htop` open in another window — a program blocked on `std::cin` shows ~0% CPU, not 100%. This is a preview of the difference between **blocking** (cheap on CPU, but ties up a whole thread) and **naive polling** (Part 5), which would show up as 100% CPU on one core doing nothing useful.
 </details>
 
-### 📊 Benchmark
-Not applicable yet — no code to measure. First real benchmark (blocking vs. thread-per-connection vs. nonblocking busy-loop) appears at the end of Part 5.
-
-### 📈 Performance Analysis
-N/A this chapter — flagged for Part 4 onward.
-
-### ⚠️ Failure Cases
-N/A this chapter — conceptual only.
-
-### 🐛 Common Bugs
-N/A this chapter — no code yet.
-
 ### ❌ Common Misconceptions
 - ❌ **"I/O just means reading and writing files."** — It means *any* interaction with something outside the CPU's own deterministic timeline: files, sockets, pipes, terminals, even some inter-process memory operations. Files are just the most familiar example.
 - ❌ **"The CPU is 'doing' the I/O operation."** — The CPU issues a *request*. The actual physical work (spinning a platter, moving electrons down a wire, waiting for a human to type) happens on hardware the CPU does not control and cannot speed up.
 - ❌ **"Blocking I/O is always bad/slow."** — Blocking is the cheapest possible mechanism in CPU terms (the kernel just parks your thread) and is completely appropriate for the common case of "one thing at a time." It only becomes a problem at concurrency scale.
 - ❌ **"Faster CPUs make I/O faster."** — I/O latency is usually dominated by the external device (disk seek time, network round-trip), not CPU speed. A 10x faster CPU does approximately nothing for a 50ms network round trip.
 - ❌ **"There's one 'right' way to do I/O."** — Every mechanism in this course is a trade-off, not a strict improvement. Blocking, threads, epoll, and io_uring all remain in active production use today, each for different workloads (Part 29 will make this precise).
-
-### 🔐 Security Considerations
-N/A this chapter — first relevant material appears in Part 28.
-
-### 🏭 Production Considerations
-N/A this chapter — first relevant material appears in Part 24.
-
-### 🆚 Comparison
-N/A yet — comparison tables begin once we have at least two competing mechanisms (Part 5 onward).
-
-### 🤔 Why Not Alternative X?
-N/A yet — there's only one "solution" discussed so far (blocking), and no alternative has been introduced to compare it against.
 
 ### 🧙 Wizard Insight
 Every I/O mechanism ever invented — blocking, select, epoll, io_uring, IOCP — is answering the *exact same question*: "the CPU and the device have different clocks; who waits, how, and at what cost?" Once you see that all 29 parts of this course are variations on that one sentence, the entire field stops looking like a pile of unrelated APIs and starts looking like a single evolving argument. When you're deep in epoll flags or io_uring ring buffers later and feel lost, come back to this sentence — it is the root of everything else.
