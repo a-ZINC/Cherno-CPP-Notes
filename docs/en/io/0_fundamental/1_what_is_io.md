@@ -87,6 +87,38 @@ flowchart TD
 
 **How to read this diagram:** Start at the top. Every request your program makes first gets classified — implicitly, by which function you called — as either pure computation (stays on-CPU, fast, deterministic) or I/O (leaves the CPU's control, timing becomes unpredictable). Only the I/O branch matters to this entire course. Once something is I/O, the *only* remaining design question is the bottom decision diamond: what does the CPU do during the gap between "asked" and "answered"? Every Part number in this course is a different answer to that single question, in the order they were invented as fixes to the previous answer's shortcomings.
 
+### 🔀 Synchronous Waiting vs. Asynchronous Notification
+
+```mermaid
+flowchart TD
+    subgraph SYNC["Synchronous Waiting - thread itself stalls"]
+        S1[Thread calls read] --> S2[Thread suspended by scheduler]
+        S2 --> S3[time passes, thread does nothing]
+        S3 --> S4[Operation ready] --> S5[Thread resumes, continues]
+    end
+    subgraph ASYNC["Asynchronous Notification - thread keeps going"]
+        A1[Thread requests operation] --> A2[Thread immediately continues other work]
+        A2 --> A3[time passes, thread stays busy]
+        A4[Operation ready] -.notifies.-> A5[Thread told later, via epoll_wait/callback/completion]
+    end
+```
+
+**How to read this diagram:** In the SYNC path, the thread's own execution literally pauses — there is a gap in its instruction stream where nothing happens (step S3). In the ASYNC path, the thread's execution never pauses for this particular operation — it keeps running other instructions (step A2) while the operation happens off to the side (step A4, on its own timeline, shown with a dotted line because it's not part of the thread's own instruction flow). The entire second half of this course is really just different implementations of the ASYNC path, each trying to make the "notifies" step cheaper, more scalable, or more precise.
+
+### 🎯 Readiness vs. Completion (Early Preview)
+
+```mermaid
+flowchart LR
+    subgraph READY["Readiness-based: select / poll / epoll / kqueue"]
+        R1["Kernel says: you CAN read now without blocking"] --> R2["YOU still call read yourself"] --> R3["Could still be partial or fail with EAGAIN"]
+    end
+    subgraph COMPLETE["Completion-based: io_uring / IOCP"]
+        C1["YOU submit the read request"] --> C2["Kernel performs the ENTIRE operation"] --> C3["Kernel says: it is DONE, here is the result"]
+    end
+```
+
+**How to read this diagram:** In the readiness model (left), the kernel's notification is only a *hint* — "go ahead, it probably won't block" — and you still do the actual work, which can still surprise you (a partial read, or even `EAGAIN` if conditions changed). In the completion model (right), you hand the entire operation to the kernel up front, and the notification you eventually get is the *finished result*, not a permission slip. This distinction is only named here as a landmark for Part 13 — the mechanics come later.
+
 ### 🐧 Linux Kernel View
 At this stage, only the shape matters, not the mechanism (that's Part 2-3): when your C++ program calls something like `read()`, control does not stay in your process's normal instruction stream. It crosses into the **kernel** via a **system call** (Part 2.6) — a deliberate, guarded transition from unprivileged userspace execution to privileged kernel execution. The kernel then talks to the relevant subsystem (VFS for files, the socket layer for network, Part 3) which may itself need to wait on a **device** (Part 1) to finish work. The kernel decides, based on how you called the API (blocking vs. nonblocking) and what mechanism you're using (plain call vs. select/epoll/io_uring), whether to suspend your thread, return an error immediately, or queue you for later notification.
 
