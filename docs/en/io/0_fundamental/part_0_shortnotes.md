@@ -92,6 +92,26 @@ sequenceDiagram
 
 ---
 
+---
+
+## Chapter 0.4 — Latency vs Throughput
+
+**Mental model:** Latency = how long *one* operation takes. Throughput = how many operations happen *per second*. Independent axes — a system can be great on one and terrible on the other.
+
+**Little's Law, rearranged:** `L = λ × W` → `λ = L / W` (throughput = concurrency ÷ latency). If latency `W` is physics-bound and fixed, the only way to raise throughput `λ` is to raise concurrency `L` — this is the mathematical reason epoll/io_uring "scale better" than thread-per-connection: they let `L` go far higher without `L` itself becoming the bottleneck.
+
+```mermaid
+flowchart LR
+    A[Low concurrency] --> B[Throughput rises ~linearly with L]
+    B --> C[Resource saturates]
+    C --> D[Latency W starts rising - queuing]
+    D --> E[Throughput plateaus or drops - thrashing]
+```
+
+**Gotchas:** average latency hides tail behavior — a system can look "fine" on average while a meaningful fraction of requests are terrible (percentiles p50/p95/p99 fix this, Part 23). More concurrency only helps up to the point the underlying resource saturates; past that, it can make *both* throughput and latency worse (queuing, thrashing). Never report one axis alone.
+
+---
+
 ## 🗂 Part 0 — Short Notes (Fast Revision)
 
 - I/O = CPU's timeline decoupled from a device's timeline — the entire reason this course exists.
