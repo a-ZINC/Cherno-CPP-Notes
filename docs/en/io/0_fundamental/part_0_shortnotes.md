@@ -131,6 +131,26 @@ flowchart TD
 
 **Gotchas:** "avoid blocking" is not a universal rule — blocking is the simplest, cheapest choice when you don't have many concurrent waits to manage. The real question is always: does my waiting mechanism's resource-cost-per-wait fit how many concurrent waits I actually need?
 
+---
+
+## Chapter 0.6 — The I/O Mental Model (Part 0 Synthesis)
+
+**The unified model — every I/O system, fully described by three questions:**
+1. **What's the physical latency gap?** (0.2/0.3 — RAM/SSD/disk/network speed, where the wait physically happens)
+2. **What waiting mechanism manages it?** (0.1/0.5 — blocking, polling, readiness notification, completion notification)
+3. **What concurrency must it sustain, and does the mechanism's resource cost fit?** (0.4 — Little's Law: `λ = L/W`)
+
+```mermaid
+flowchart LR
+    A[Do it yourself, repeatedly<br/>polling / one thread per wait] --> B[Get notified instead of asking<br/>interrupts / epoll-kqueue]
+    B --> C[Let the other side do the WHOLE thing,<br/>just report completion<br/>DMA / io_uring-IOCP]
+```
+
+**Core idea:** this 3-stage pattern (do-it-yourself → notification → completion) repeats identically at the hardware layer (Ch 0.3: programmed I/O → interrupts → DMA) and the software layer (Parts 5-14: busy-poll → select/poll/epoll → io_uring). Same pattern, two layers — recognize it once, understand both.
+
+**Gotcha:** newer ≠ always better. io_uring isn't "strictly superior" to blocking — the right mechanism depends on your actual latency-gap and concurrency answers, not on chasing the newest API. Part 29 formalizes this into a full decision framework.
+
+---
 
 ## 🗂 Part 0 — Short Notes (Fast Revision)
 
