@@ -118,9 +118,11 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    A[WAITING - general problem] --> B["BLOCKING: thread enters<br/>OS Blocked state"]
-    A --> C["POLLING: thread stays Running,<br/>repeatedly checks"]
-    A --> D["READINESS/COMPLETION notification:<br/>thread blocks on kernel watching<br/>MANY things at once"]
+    A[WAITING - the general problem:<br/>the thread needs a result<br/>it doesn't have yet]
+    A --> B["BLOCKING (this chapter):<br/>thread enters OS Blocked state,<br/>scheduler runs someone else"]
+    A --> C["POLLING (Part 5):<br/>thread stays Running,<br/>repeatedly checks readiness"]
+    A --> D["READINESS NOTIFICATION (Parts 6-8,12):<br/>thread blocks on the KERNEL WATCHING<br/>many things, not one operation"]
+    A --> E["COMPLETION NOTIFICATION (Part 14,20):<br/>thread blocks waiting for the kernel<br/>to finish doing the whole operation"]
 ```
 
 **Core idea:** any blocking call — I/O, a mutex, `sleep()`, `waitpid()` — moves a thread into the same OS "Blocked" state, with the same resource cost (a parked thread: stack + kernel scheduling metadata), regardless of *what* it's waiting for. The cost comes from being a parked thread, not from what you're blocked on.
