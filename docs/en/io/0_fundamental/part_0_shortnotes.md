@@ -112,6 +112,24 @@ flowchart LR
 
 ---
 
+## Chapter 0.5 — Blocking vs Waiting
+
+**Mental model:** "Blocking" is one specific mechanism for waiting (thread enters the OS's formal Blocked state); "waiting" is the general problem. Polling, readiness notification, and completion notification are other mechanisms for the same problem.
+
+```mermaid
+flowchart TD
+    A[WAITING - general problem] --> B["BLOCKING: thread enters<br/>OS Blocked state"]
+    A --> C["POLLING: thread stays Running,<br/>repeatedly checks"]
+    A --> D["READINESS/COMPLETION notification:<br/>thread blocks on kernel watching<br/>MANY things at once"]
+```
+
+**Core idea:** any blocking call — I/O, a mutex, `sleep()`, `waitpid()` — moves a thread into the same OS "Blocked" state, with the same resource cost (a parked thread: stack + kernel scheduling metadata), regardless of *what* it's waiting for. The cost comes from being a parked thread, not from what you're blocked on.
+
+**Reframe epoll/io_uring correctly:** they don't "eliminate blocking" — `epoll_wait()` still blocks, just on *one call representing thousands of operations* instead of one blocking call per operation. It's amortized blocking, not blocking removed.
+
+**Gotchas:** "avoid blocking" is not a universal rule — blocking is the simplest, cheapest choice when you don't have many concurrent waits to manage. The real question is always: does my waiting mechanism's resource-cost-per-wait fit how many concurrent waits I actually need?
+
+
 ## 🗂 Part 0 — Short Notes (Fast Revision)
 
 - I/O = CPU's timeline decoupled from a device's timeline — the entire reason this course exists.
