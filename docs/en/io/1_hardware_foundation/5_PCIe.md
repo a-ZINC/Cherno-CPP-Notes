@@ -30,7 +30,7 @@ flowchart TD
     CPU -->|"x16 lanes"| GPU[GPU]
     CPU -->|"x4 lanes"| NVMe[NVMe SSD]
     CPU -->|"x4 lanes"| NIC[High-perf NIC]
-    CPU -.total lane budget e.g. ~24-28.-> Budget["Finite shared pool<br/>all devices draw from"]
+    CPU -.->|"total lane budget e.g. ~24-28"| Budget["Finite shared pool<br/>all devices draw from"]
 ```
 
 **How to read this diagram:** Each device gets its own dedicated point-to-point link (no literal wire-sharing between the GPU and the NIC) — but all those links draw from the *same finite total* the CPU/chipset can provide (the dotted box at the bottom). If you plug in enough high-bandwidth devices, you can run out of that shared budget even though no individual link is being "shared" in the old-bus sense — this is the concrete, modern version of Chapter 0.3's "the bus is a shared resource" warning, and it's the reason server hardware specification sheets always list total PCIe lane counts as a first-class spec, right alongside CPU core count and RAM capacity.
