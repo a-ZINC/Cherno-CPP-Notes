@@ -137,6 +137,29 @@ sequenceDiagram
 
 **Gotchas:** DMA transfers aren't instant — same physical latency numbers apply (Ch 0.2), just without tying up the CPU. DMA competes with the CPU for memory-bus bandwidth (Ch 1.4) — "CPU is free" means free of instruction execution, not zero system-wide impact. Buffers must be pinned in RAM before DMA can target them (Part 15 detail).
 
+**Not quite!** There is an important difference between **device control registers** and **bulk data storage**, and it helps to keep them separated in your mental model.
+
+---
+
+### The Clean Distinction: Control vs. Bulk Data
+
+1. **Device Registers (MMIO) are like a Control Panel:**
+* Device registers do **not** hold the actual file or network packet.
+* Instead, they act like buttons, switches, and status lights. The CPU writes control commands or pointers *to* them (or reads status *from* them). They are tiny storage spots on the device chip itself.
+
+
+2. **DMA (Direct Memory Access) is like a High-Speed Pipeline:**
+* DMA is the physical engine that pumps the **actual bulk data** (megabytes of a file or incoming network packets) straight between the **physical hardware device** (the storage media or network chip) and **system RAM**.
+
+
+
+---
+
+### Putting It All Together
+
+* **What the CPU writes to a register:** The CPU (via MMIO) writes a tiny message to a device register saying: *"Hey, fetch data from disk and dump it into RAM address 0x7FFF0000."*
+* **What DMA actually does:** The DMA engine inside the controller takes that instruction, goes directly to the hardware storage/network source, pulls the real data, and streams it straight into that RAM address—**without** passing that massive stream of data through the device registers or bothering the CPU.
+
 ---
 
 ## Chapter 1.8 — Interrupts
