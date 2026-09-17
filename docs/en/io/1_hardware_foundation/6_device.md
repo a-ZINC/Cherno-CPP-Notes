@@ -35,6 +35,29 @@ flowchart TD
 
 **How to read this diagram:** The driver never talks to the device controller "directly" in a synchronous, one-at-a-time way for high-performance devices — it writes a description of the work into a ring buffer sitting in ordinary RAM, and the controller picks that work up on its own schedule via DMA, working through the ring independently. When done, it writes a completion record into another ring (or the same one), and either raises an interrupt or expects the driver to poll the completion ring (Part 21's high-performance polling drivers). This submission-ring / completion-ring shape is the direct hardware ancestor of io_uring's SQE (Submission Queue Entry) / CQE (Completion Queue Entry) model (Part 14) — when you reach that chapter, you'll be learning a software API that mirrors a hardware pattern you've already seen here.
 
+**Not quite!** There is an important difference between **device control registers** and **bulk data storage**, and it helps to keep them separated in your mental model.
+
+---
+
+### The Clean Distinction: Control vs. Bulk Data
+
+1. **Device Registers (MMIO) are like a Control Panel:**
+* Device registers do **not** hold the actual file or network packet.
+* Instead, they act like buttons, switches, and status lights. The CPU writes control commands or pointers *to* them (or reads status *from* them). They are tiny storage spots on the device chip itself.
+
+
+2. **DMA (Direct Memory Access) is like a High-Speed Pipeline:**
+* DMA is the physical engine that pumps the **actual bulk data** (megabytes of a file or incoming network packets) straight between the **physical hardware device** (the storage media or network chip) and **system RAM**.
+
+
+
+---
+
+### Putting It All Together
+
+* **What the CPU writes to a register:** The CPU (via MMIO) writes a tiny message to a device register saying: *"Hey, fetch data from disk and dump it into RAM address 0x7FFF0000."*
+* **What DMA actually does:** The DMA engine inside the controller takes that instruction, goes directly to the hardware storage/network source, pulls the real data, and streams it straight into that RAM address—**without** passing that massive stream of data through the device registers or bothering the CPU.
+
 ### ❌ Common Misconceptions
 - ❌ **"MMIO means the device data itself lives in RAM."** — MMIO means the device's *control/status registers* are addressed like RAM addresses; the actual bulk data transfer for high-throughput devices typically happens via separate DMA transfers into genuine RAM buffers, coordinated through descriptor rings, not by the CPU reading/writing bulk data through MMIO registers directly (that would be far too slow for high-throughput use).
 - ❌ **"Every device uses descriptor rings."** — Simple, low-throughput devices (a basic serial port, some legacy peripherals) may use much simpler register-poke-and-check patterns; descriptor rings specifically earn their complexity for high-throughput devices (NICs, NVMe) where per-operation CPU involvement would be a bottleneck.
