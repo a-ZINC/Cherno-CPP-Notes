@@ -98,6 +98,18 @@ flowchart TB
 
 **Where the call stack physically lives:** `%rsp`/`%rbp` are hardware registers holding *addresses*. The actual stack bytes — locals, return addresses, saved frame pointers — live in ordinary RAM pages (`PROCDATA` above), get cached in L1/L2/L3 like anything else, and can be paged out under memory pressure. Nothing about the stack is special hardware — it's a software convention pointed to by two ordinary registers.
 
+Yes, exactly. The work queues, wait queues, and ready queues you see here are the exact real-world implementation of the abstract queues taught in every operating system textbook.
+
+While textbooks often draw them as simple boxes labeled *"Ready Queue"* or *"Blocked/Waiting Queue,"* in the Linux kernel they are actual, concrete C data structures (like circular doubly linked lists using `struct list_head`) living inside RAM.
+
+Here is how the textbook concepts map directly to what we just walked through:
+
+* **The "Ready" / Run Queue:** This is the textbook **Ready Queue**. It holds the `task_struct` pointers of all threads whose states are `TASK_READY` (or `TASK_RUNNING`)—meaning they have all their data, are fully unblocked, and are just waiting for the scheduler to hand them a CPU core.
+* **The Wait Queue:** This is the textbook **Blocked/Waiting Queue**. Unlike textbooks which sometimes imply a single global waiting area, real kernels use **specific resource queues** (`page->wait_queue`, socket wait queues, etc.) so the OS knows precisely which thread to target when a specific piece of data finally arrives.
+* **Work Queues / Softirqs:** These handle deferred tasks (like finishing up an I/O operation after an interrupt). Textbooks often touch on bottom-halves, deferred service routines, or device queues here to explain how the OS separates urgent, split-second hardware events from heavy background processing.
+
+So every time an OS textbook talks about a process state transition (from *Running* to *Blocked* to *Ready*), it is literally describing a `task_struct` having its state variable updated and its pointer being unlinked from one of these lists and linked into another!
+
 ---
 
 ## FLOW 1 — Reading From Memory
@@ -537,6 +549,33 @@ sequenceDiagram
     SCHED->>SCHED: DECISION 3 -- at ITS next scheduling point<br/>(could be immediate if a core is idle,<br/>could be delayed if all cores are busy<br/>with higher-priority work), picks from RUNQ
     SCHED->>TASKS: restore_context() -- NOW it actually runs
 ```
+
+**No, they are completely different registers in entirely opposite locations.**
+
+They flow in opposite directions across the PCIe bus and serve two completely different purposes:
+
+---
+
+### 1. The Doorbell Register (CPU $\rightarrow$ Device)
+
+* **Where it lives:** **On the device controller chip** (e.g., sitting physically on the SSD or NIC card).
+* **Who writes to it:** The **CPU core** writes to it using **MMIO** (Memory-Mapped I/O).
+* **What it means:** The CPU is telling the device: *"I just wrote a new command descriptor into the submission queue in RAM; go look at it."*
+
+### 2. The MSI Interrupt Write (Device $\rightarrow$ CPU)
+
+* **Where it lives:** **Inside the CPU chip** (specifically, inside the CPU core's **Local APIC** register).
+* **Who writes to it:** The **device's PCIe/DMA engine** writes to it.
+* **What it means:** The device is sending a message across the PCIe bus directly to the CPU's Local APIC to say: *"I finished the job you asked for; raise interrupt vector N."*
+
+---
+
+### Summary of Direction
+
+* **Doorbell:** CPU $\rightarrow$ PCIe Bus $\rightarrow$ **Device Register**
+* **Interrupt (MSI):** Device $\rightarrow$ PCIe Bus $\rightarrow$ **CPU's Local APIC Register**
+
+Because they move in opposite directions and control different hardware chips entirely, they are entirely separate physical registers.
 
 ### The Three Decisions, Named Explicitly
 
