@@ -12,6 +12,8 @@
 >
 > **Read this note in VS Code** with the *Markdown Preview Mermaid Support* extension (already in the repo's recommended extensions) so the diagrams render. Collapsible solution blocks work in the built-in preview.
 
+> **All code is in this note.** Every file is listed in full in **[Appendix A](#appendix-a--complete-code-file-by-file)** (A.0 tells you how to create the folders). Steps show the important parts inline and point to the full listing.
+
 ---
 
 ## 0. Chapter Overview
@@ -179,6 +181,8 @@ Why separate `lab/` from `src/`?
 
 ### First build
 
+📄 **Create the files first:** follow Appendix A.0, then A.1 to A.20.
+
 ```bash
 cd debugging-wizard
 git init && git add -A && git commit -m "Phase 0 chapter 1: repo skeleton"
@@ -204,6 +208,8 @@ CMake is a **build-system generator**: it reads a description of targets and opt
 
 Each preset builds into `build/<preset>/`, so all four coexist and you can compare binaries side by side.
 
+📄 **Full files:** Appendix A.1 (`CMakeLists.txt`), A.2 (`CMakePresets.json`), A.3 (`lab/CMakeLists.txt`), A.4 (`tests/CMakeLists.txt`).
+
 The heart of the top-level `CMakeLists.txt` is one **interface target** that carries flags to every executable:
 
 ```cmake
@@ -218,6 +224,8 @@ endif()
 ```
 
 Every executable then says `target_link_libraries(name PRIVATE dw_options)` and inherits the same rules.
+
+> **Honesty note.** The C++ sources were compiled and run with these exact flags while preparing this note, but the sandbox I used had no CMake, so the CMake files themselves were not executed. Your first `cmake --preset debug` is their real test. Paste any error to me.
 
 ### 🧠 THINK
 
@@ -235,44 +243,6 @@ Every executable then says `target_link_libraries(name PRIVATE dw_options)` and 
 4. One place to change means no drift between executables. If `fd_test` were compiled without `-Wshadow` while `bugs` had it, "the warnings are clean" would mean different things in different places.
 
 </details>
-
-
-# Deep Dive: Sanitizer Compiler & Linker Flags
-
-## Why Sanitizer Flags Go in Both Compile and Link Options
-
-* **Compile Step (`target_compile_options`):** Injects code instrumentation (checks for memory safety and undefined behaviors) directly into the generated assembly instructions for every memory access. Without this, code compiles normally.
-* **Link Step (`target_link_options`):** Links the required sanitizer runtime library (`libasan`, `libubsan`, etc.) and wraps standard functions like `malloc` and `free`. Omitting this leads to `undefined reference` linker errors.
-
----
-
-## What `-fno-omit-frame-pointer` Does
-
-* By default, optimized builds (`-O2` / `-O3`) omit the frame pointer (`rbp` on x86_64) to free up a general-purpose register.
-* `-fno-omit-frame-pointer` forces the compiler to keep the frame pointer locked.
-* **Why it matters:** When a sanitizer detects a crash, it needs to instantly unwind the call stack to print an accurate backtrace. Keeping the frame pointer makes stack-walking reliable, fast, and resilient even when debug symbols are missing or stripped.
-
----
-
-## What Bugs Do Sanitizers Catch?
-
-Your configuration (`-fsanitize=address,undefined`) activates **AddressSanitizer (ASan)**, **LeakSanitizer (LSan)**, and **UndefinedBehaviorSanitizer (UBSan)**:
-
-### AddressSanitizer (ASan) & LeakSanitizer (LSan)
-
-* **Buffer Overflows / Underflows:** Accessing heap, stack, or global arrays out of bounds.
-* **Use-After-Free:** Reading or writing to memory after `free()` or `delete`.
-* **Use-After-Scope:** Accessing local stack variables outside their defined code block.
-* **Double / Invalid Free:** Freeing the same pointer twice or passing invalid pointers.
-* **Memory Leaks:** Unreachable dynamic memory (`malloc`/`new`) that was never deallocated before program exit.
-
-### UndefinedBehaviorSanitizer (UBSan)
-
-* **Integer Overflows:** Signed arithmetic that wraps around or overflows limits.
-* **Division by Zero:** Dividing integers by zero.
-* **Null Pointer Dereferences:** Reading/writing through a null pointer.
-* **Shift Out of Bounds:** Shifting by negative numbers or values exceeding type width.
-* **Invalid Enums / Misaligned Pointers:** Casting illegal integer values to enums or accessing unaligned memory.
 
 ---
 
@@ -315,6 +285,8 @@ flowchart LR
 | Debug adapter → gdb → process | gdb controls your process through the `ptrace` system call. |
 
 ### Setup
+
+📄 **Full files:** Appendix A.15 (`settings.json`), A.16 (`launch.json`), A.17 (`extensions.json`), A.18 (`.clang-format`), A.19 (`.clang-tidy`).
 
 Install VS Code from Microsoft's official `.deb` or apt repository, or with `sudo snap install code --classic`. Then:
 
@@ -390,7 +362,7 @@ The lesson is the reason use-after-free is dangerous: the program neither crashe
 
 ## Step 1.5 — First Program: Observe It
 
-`lab/hello.cpp`:
+`lab/hello.cpp` (📄 Appendix A.6):
 
 ```cpp
 #include <cstdio>
@@ -455,6 +427,8 @@ Why does `grep ... /proc/self/status` report the name and PID of `grep`, not you
 ---
 
 ## Step 1.6 — The Leak Experiment: VSZ vs RSS
+
+📄 **Full files:** Appendix A.7 (`leak_bounded.cpp`) and A.13 (`observe_leak.sh`).
 
 `lab/leak_bounded.cpp` allocates 1 MB per second, touches one byte of each block, and never frees. It is bounded so it exits normally (LSan only reports at exit).
 
@@ -560,6 +534,8 @@ flowchart LR
 
 ## Step 1.8 — Break It: The Bug Zoo
 
+📄 **Full file:** Appendix A.8.
+
 `lab/bugs.cpp` contains four deliberate bugs selected by argument: `leak`, `overflow` (write one past a heap array), `uaf` (read freed memory), `ub` (signed integer overflow).
 
 ```bash
@@ -618,6 +594,8 @@ Often yes if the access lands in a poisoned redzone, but jumping **far** past an
 **RAII (Resource Acquisition Is Initialization):** tie a resource's lifetime to an object's lifetime. Acquire in the constructor, release in the destructor. The compiler guarantees the destructor runs when the object leaves scope, including on early `return` and during exception unwinding.
 
 ### The broken version
+
+📄 **Full files:** Appendix A.9 (`fd_leak.cpp`), A.10 (`fd_raii.cpp`), A.5 (`fd.hpp`), A.12 (`fd_test.cpp`).
 
 `lab/fd_leak.cpp` opens `/proc/meminfo` in a loop and never closes it. Run it with a **lowered descriptor limit** so it fails quickly, and watch from a second terminal:
 
@@ -726,7 +704,11 @@ ctest --preset asan
 
 ## Step 1.10 — Measure: What Does Instrumentation Cost?
 
-Never claim "sanitizers make it 2x slower" without measuring on **your** machine and **your** workload. `lab/bench.cpp` is an allocation-heavy workload (200 rounds of 20,000 small vectors).
+Never claim "sanitizers make it 2x slower" without measuring on **your** machine and **your** workload.
+
+📄 **Full files:** Appendix A.11 (`bench.cpp`) and A.14 (`bench_sanitizers.sh`).
+
+`lab/bench.cpp` is an allocation-heavy workload (200 rounds of 20,000 small vectors).
 
 ```bash
 cmake --preset rel     && cmake --build --preset rel -j
@@ -875,3 +857,677 @@ I can:
 | 1 | | | |
 | 2 | | | |
 | 3 | | | |
+
+---
+
+## Appendix A — Complete Code, File by File
+
+Everything needed to build this chapter is on this page, so you do not need any download. Each listing is the exact file that was compiled and tested while preparing this note (the C++ sources and `fd_test` were compiled with the same warning flags and run; the CMake files were not run through CMake, see the note in Step 1.3).
+
+**Convention for every future chapter:** code lives inside its note, so each note is self-contained.
+
+### A.0 Create the folder structure
+
+```bash
+mkdir -p ~/debugging-wizard
+cd ~/debugging-wizard
+mkdir -p include/dw src lab tests bench docs/notes scripts .vscode
+touch src/.gitkeep bench/.gitkeep
+```
+
+Then create each file below at the path in its heading. In VS Code: right-click the folder → **New File**, paste the listing. From a terminal you can also run `nano <path>` or `code <path>`.
+
+### A.1 `CMakeLists.txt`
+
+Top-level build description: one shared `dw_options` target.
+
+```cmake
+cmake_minimum_required(VERSION 3.25)
+project(DebuggingWizard VERSION 0.1.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)   # clangd reads compile_commands.json
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+endif()
+
+option(DW_SANITIZE    "Build with AddressSanitizer + UBSan" OFF)
+option(DW_WERROR      "Treat warnings as errors"            OFF)
+option(DW_BUILD_LAB   "Build lab experiments"               ON)
+option(DW_BUILD_TESTS "Build tests"                         ON)
+
+# One INTERFACE target carries include paths, warnings and sanitizer flags
+# to every executable in the repo.
+add_library(dw_options INTERFACE)
+target_include_directories(dw_options INTERFACE ${PROJECT_SOURCE_DIR}/include)
+target_compile_options(dw_options INTERFACE -Wall -Wextra -Wpedantic -Wshadow)
+
+if(DW_WERROR)
+  target_compile_options(dw_options INTERFACE -Werror)
+endif()
+
+if(DW_SANITIZE)
+  target_compile_options(dw_options INTERFACE
+    -fsanitize=address,undefined -fno-omit-frame-pointer)
+  target_link_options(dw_options INTERFACE
+    -fsanitize=address,undefined)
+endif()
+
+if(DW_BUILD_LAB)
+  add_subdirectory(lab)
+endif()
+
+if(DW_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
+```
+
+### A.2 `CMakePresets.json`
+
+Named configurations: debug, asan, rel, asan-rel.
+
+```json
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": { "CMAKE_EXPORT_COMPILE_COMMANDS": "ON" }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug (plain: gdb + Valgrind)",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "asan",
+      "displayName": "Debug + ASan/LSan/UBSan",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "DW_SANITIZE": "ON" }
+    },
+    {
+      "name": "rel",
+      "displayName": "RelWithDebInfo (plain: benchmarks)",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "asan-rel",
+      "displayName": "RelWithDebInfo + ASan/UBSan (benchmarks)",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo", "DW_SANITIZE": "ON" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "debug",    "configurePreset": "debug" },
+    { "name": "asan",     "configurePreset": "asan" },
+    { "name": "rel",      "configurePreset": "rel" },
+    { "name": "asan-rel", "configurePreset": "asan-rel" }
+  ],
+  "testPresets": [
+    { "name": "debug", "configurePreset": "debug", "output": { "outputOnFailure": true } },
+    { "name": "asan",  "configurePreset": "asan",  "output": { "outputOnFailure": true } }
+  ]
+}
+```
+
+### A.3 `lab/CMakeLists.txt`
+
+Registers the lab experiments.
+
+```cmake
+# Lab = throwaway experiments and deliberately broken programs.
+# Code graduates to src/ only after it has earned its place.
+function(dw_lab name)
+  add_executable(${name} ${name}.cpp)
+  target_link_libraries(${name} PRIVATE dw_options)
+endfunction()
+
+dw_lab(hello)
+dw_lab(leak_bounded)
+dw_lab(bugs)
+dw_lab(fd_leak)
+dw_lab(fd_raii)
+dw_lab(bench)
+```
+
+### A.4 `tests/CMakeLists.txt`
+
+Registers the test and hooks it to ctest.
+
+```cmake
+add_executable(fd_test fd_test.cpp)
+target_link_libraries(fd_test PRIVATE dw_options)
+add_test(NAME fd_test COMMAND fd_test)
+```
+
+### A.5 `include/dw/fd.hpp`
+
+The RAII file-descriptor wrapper `dw::Fd`.
+
+```cpp
+#pragma once
+
+#include <unistd.h>
+
+namespace dw {
+
+// Owns a POSIX file descriptor. Closes it when the object dies (RAII).
+class Fd {
+public:
+    Fd() noexcept = default;
+    explicit Fd(int fd) noexcept : fd_(fd) {}
+    ~Fd() { reset(); }
+
+    Fd(const Fd&) = delete;             // two owners would double-close
+    Fd& operator=(const Fd&) = delete;
+
+    Fd(Fd&& other) noexcept : fd_(other.release()) {}
+    Fd& operator=(Fd&& other) noexcept {
+        if (this != &other) {
+            reset(other.release());
+        }
+        return *this;
+    }
+
+    int get() const noexcept { return fd_; }
+    bool valid() const noexcept { return fd_ >= 0; }
+
+    // Give up ownership without closing.
+    int release() noexcept {
+        int f = fd_;
+        fd_ = -1;
+        return f;
+    }
+
+    // Close the current descriptor (if any) and adopt a new one.
+    void reset(int fd = -1) noexcept {
+        if (fd_ >= 0) {
+            ::close(fd_);
+        }
+        fd_ = fd;
+    }
+
+private:
+    int fd_ = -1;
+};
+
+}  // namespace dw
+```
+
+### A.6 `lab/hello.cpp`
+
+Step 1.5: first program.
+
+```cpp
+#include <cstdio>
+#include <unistd.h>
+
+int main() {
+    std::printf("hello from pid %d\n", static_cast<int>(getpid()));
+    return 0;
+}
+```
+
+### A.7 `lab/leak_bounded.cpp`
+
+Step 1.6: deliberate leak (VSZ vs RSS).
+
+```cpp
+// Deliberate leak: 1 MB per second, one byte touched per block.
+// Bounded so it exits normally (LeakSanitizer only reports at exit).
+#include <cstdio>
+#include <cstdlib>
+#include <unistd.h>
+
+int main(int argc, char** argv) {
+    int iterations = (argc > 1) ? std::atoi(argv[1]) : 10;
+    for (int i = 0; i < iterations; ++i) {
+        char* p = static_cast<char*>(std::malloc(1024 * 1024));  // 1 MB
+        if (!p) {
+            return 1;
+        }
+        p[0] = 'x';  // touch one byte -> one 4 KB page becomes resident
+        std::printf("iter %d\n", i);
+        std::fflush(stdout);
+        sleep(1);
+        // deliberately never freed
+    }
+    return 0;
+}
+```
+
+### A.8 `lab/bugs.cpp`
+
+Step 1.8: the bug zoo.
+
+```cpp
+// The bug zoo: four deliberate bugs selected by argument.
+#include <climits>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
+static void leak() {
+    char* p = new char[100];
+    p[0] = 1;
+    std::printf("leak: %d\n", p[0]);
+    // never delete[]
+}
+
+static void overflow() {
+    int* a = new int[4];
+    a[4] = 1;  // one past the end
+    std::printf("overflow: %d\n", a[4]);
+    delete[] a;
+}
+
+static void use_after_free() {
+    int* a = new int[4];
+    a[0] = 7;
+    delete[] a;
+    std::printf("uaf: %d\n", a[0]);  // reads freed memory
+}
+
+static void ub_overflow() {
+    volatile int x = INT_MAX;
+    int y = x + 1;  // signed overflow: undefined behavior
+    std::printf("ub: %d\n", y);
+}
+
+int main(int argc, char** argv) {
+    if (argc < 2) {
+        std::fprintf(stderr, "usage: bugs leak|overflow|uaf|ub\n");
+        return 2;
+    }
+    if (std::strcmp(argv[1], "leak") == 0) {
+        leak();
+    } else if (std::strcmp(argv[1], "overflow") == 0) {
+        overflow();
+    } else if (std::strcmp(argv[1], "uaf") == 0) {
+        use_after_free();
+    } else if (std::strcmp(argv[1], "ub") == 0) {
+        ub_overflow();
+    } else {
+        std::fprintf(stderr, "unknown bug: %s\n", argv[1]);
+        return 2;
+    }
+    return 0;
+}
+```
+
+### A.9 `lab/fd_leak.cpp`
+
+Step 1.9: deliberate descriptor leak.
+
+```cpp
+// Deliberate fd leak: opens /proc/meminfo forever and never closes it.
+// Try:  (ulimit -n 256; ./fd_leak)
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
+#include <fcntl.h>
+#include <unistd.h>
+
+int main() {
+    for (int i = 0;; ++i) {
+        int fd = open("/proc/meminfo", O_RDONLY);
+        if (fd < 0) {
+            std::printf("open failed at iteration %d: %s\n", i, std::strerror(errno));
+            return 1;
+        }
+        usleep(100000);  // 0.1 s so we can watch /proc/PID/fd grow
+        // BUG: no close(fd)
+    }
+}
+```
+
+### A.10 `lab/fd_raii.cpp`
+
+Step 1.9: the RAII fix.
+
+```cpp
+// The fix: dw::Fd closes the descriptor on every scope exit.
+#include <cstdio>
+#include <fcntl.h>
+
+#include "dw/fd.hpp"
+
+int main() {
+    for (int i = 0; i < 100000; ++i) {
+        dw::Fd f(::open("/proc/meminfo", O_RDONLY));
+        if (!f.valid()) {
+            std::perror("open");
+            return 1;
+        }
+        // f leaves scope here: the destructor closes the descriptor
+    }
+    std::puts("done: no fd leak");
+    return 0;
+}
+```
+
+### A.11 `lab/bench.cpp`
+
+Step 1.10: allocation-heavy benchmark workload.
+
+```cpp
+// Allocation-heavy workload used to measure sanitizer overhead.
+#include <cstdint>
+#include <cstdio>
+#include <vector>
+
+int main() {
+    std::vector<std::vector<int>> v;
+    std::uint64_t sum = 0;
+    for (int round = 0; round < 200; ++round) {
+        v.clear();
+        for (int i = 0; i < 20000; ++i) {
+            v.emplace_back(64, i);  // many small allocations
+        }
+        for (const auto& x : v) {
+            for (int y : x) {
+                sum += static_cast<std::uint64_t>(y);
+            }
+        }
+    }
+    std::printf("%llu\n", static_cast<unsigned long long>(sum));
+    return 0;
+}
+```
+
+### A.12 `tests/fd_test.cpp`
+
+Step 1.9: tests for `dw::Fd`.
+
+```cpp
+// Tiny dependency-free test for dw::Fd (a real framework arrives in Chapter 5).
+#include <cstdio>
+#include <cstdlib>
+#include <fcntl.h>
+#include <utility>
+#include <vector>
+
+#include "dw/fd.hpp"
+
+#define CHECK(cond)                                                                        \
+    do {                                                                                   \
+        if (!(cond)) {                                                                     \
+            std::fprintf(stderr, "CHECK failed: %s (%s:%d)\n", #cond, __FILE__, __LINE__); \
+            std::exit(1);                                                                  \
+        }                                                                                  \
+    } while (0)
+
+static bool is_open(int fd) { return ::fcntl(fd, F_GETFD) != -1; }
+
+int main() {
+    // 1. Destructor closes the descriptor.
+    int raw = -1;
+    {
+        dw::Fd f(::open("/dev/null", O_RDONLY));
+        CHECK(f.valid());
+        raw = f.get();
+        CHECK(is_open(raw));
+    }
+    CHECK(!is_open(raw));
+
+    // 2. Move transfers ownership exactly once.
+    {
+        dw::Fd a(::open("/dev/null", O_RDONLY));
+        int raw2 = a.get();
+        dw::Fd b(std::move(a));
+        CHECK(!a.valid());  // NOLINT(bugprone-use-after-move): testing moved-from state
+        CHECK(b.get() == raw2);
+        CHECK(is_open(raw2));
+    }
+
+    // 3. release() gives up ownership without closing.
+    {
+        dw::Fd f(::open("/dev/null", O_RDONLY));
+        int r = f.release();
+        CHECK(!f.valid());
+        CHECK(is_open(r));
+        ::close(r);
+    }
+
+    // 4. Vector growth moves elements; each descriptor still has one owner.
+    std::vector<int> raws;
+    {
+        std::vector<dw::Fd> v;
+        for (int i = 0; i < 100; ++i) {
+            v.emplace_back(::open("/dev/null", O_RDONLY));
+        }
+        for (const auto& f : v) {
+            CHECK(f.valid() && is_open(f.get()));
+            raws.push_back(f.get());
+        }
+    }
+    for (int r : raws) {
+        CHECK(!is_open(r));
+    }
+
+    std::puts("fd_test: all checks passed");
+    return 0;
+}
+```
+
+### A.13 `scripts/observe_leak.sh`
+
+Step 1.6: watch VmSize/VmRSS of a running program.
+
+```bash
+#!/usr/bin/env bash
+# Watch VmSize / VmRSS of a running program.
+# Usage: scripts/observe_leak.sh build/debug/lab/leak_bounded [iterations] [samples] [interval_s]
+set -euo pipefail
+
+bin=${1:?usage: observe_leak.sh <binary> [iterations=60] [samples=6] [interval=5]}
+iters=${2:-60}
+samples=${3:-6}
+interval=${4:-5}
+
+"$bin" "$iters" >/dev/null &
+pid=$!
+trap 'kill "$pid" 2>/dev/null || true' EXIT
+
+printf '%-8s %-12s %-12s\n' "t(s)" "VmSize(kB)" "VmRSS(kB)"
+for ((i = 0; i < samples; i++)); do
+    awk -v t="$((i * interval))" '
+        /^VmSize:/ { s = $2 }
+        /^VmRSS:/  { r = $2 }
+        END { printf "%-8s %-12s %-12s\n", t, s, r }' "/proc/$pid/status"
+    sleep "$interval"
+done
+```
+
+### A.14 `scripts/bench_sanitizers.sh`
+
+Step 1.10: compare plain vs ASan wall time and max RSS.
+
+```bash
+#!/usr/bin/env bash
+# Compare wall time and max RSS of lab/bench: plain vs ASan+UBSan.
+# Needs GNU time:  sudo apt install time
+# Build first:  cmake --preset rel && cmake --build --preset rel -j
+#               cmake --preset asan-rel && cmake --build --preset asan-rel -j
+set -euo pipefail
+
+runs=${1:-3}
+for preset in rel asan-rel; do
+    bin="build/$preset/lab/bench"
+    if [[ ! -x $bin ]]; then
+        echo "missing $bin (build the '$preset' preset first)" >&2
+        exit 1
+    fi
+    echo "== $preset =="
+    for ((i = 1; i <= runs; i++)); do
+        /usr/bin/time -v "$bin" 2>&1 >/dev/null |
+            awk '/Elapsed/ { w = $NF } /Maximum resident/ { m = $NF }
+                 END { printf "  run: wall=%s  maxrss_kB=%s\n", w, m }'
+    done
+done
+```
+
+### A.15 `.vscode/settings.json`
+
+Step 1.4: clangd, CMake Tools, formatting.
+
+```jsonc
+{
+  // --- CMake Tools: presets drive configure/build/test ---
+  "cmake.useCMakePresets": "always",
+  "cmake.copyCompileCommands": "${workspaceFolder}/compile_commands.json",
+  "cmake.configureOnOpen": false,
+
+  // --- clangd: the code-intelligence engine (IntelliSense replacement) ---
+  "clangd.arguments": [
+    "--background-index",
+    "--clang-tidy",
+    "--header-insertion=iwyu",
+    "--completion-style=detailed",
+    "--query-driver=/usr/bin/g++*,/usr/bin/c++*"
+  ],
+
+  // --- Microsoft C/C++ extension: used ONLY for the gdb debugger ---
+  "C_Cpp.intelliSenseEngine": "disabled",
+  "C_Cpp.autocomplete": "disabled",
+  "C_Cpp.errorSquiggles": "disabled",
+  "C_Cpp.formatting": "disabled",
+
+  // --- Editor behaviour ---
+  "editor.formatOnSave": true,
+  "[cpp]": { "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd" },
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+  "editor.rulers": [100],
+
+  // --- Keep noisy generated folders out of search ---
+  "files.watcherExclude": { "**/build/**": true, "**/.cache/**": true },
+  "search.exclude": { "**/build": true, "**/.cache": true, "**/compile_commands.json": true }
+}
+```
+
+### A.16 `.vscode/launch.json`
+
+Step 1.4: gdb debug configurations.
+
+```jsonc
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      // Debug whichever target is selected in the CMake Tools status bar.
+      "name": "gdb: selected CMake target",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${command:cmake.launchTargetPath}",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "MIMode": "gdb",
+      "miDebuggerPath": "/usr/bin/gdb",
+      "stopAtEntry": false,
+      "setupCommands": [
+        { "description": "Pretty-print STL containers", "text": "-enable-pretty-printing", "ignoreFailures": true }
+      ]
+    },
+    {
+      // Same, but with an argument. Edit "args" to leak | overflow | uaf | ub.
+      "name": "gdb: selected target + args (edit me)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${command:cmake.launchTargetPath}",
+      "args": ["uaf"],
+      "cwd": "${workspaceFolder}",
+      "MIMode": "gdb",
+      "miDebuggerPath": "/usr/bin/gdb",
+      "stopAtEntry": false,
+      "setupCommands": [
+        { "description": "Pretty-print STL containers", "text": "-enable-pretty-printing", "ignoreFailures": true }
+      ]
+    }
+  ]
+}
+```
+
+### A.17 `.vscode/extensions.json`
+
+Step 1.4: recommended extensions.
+
+```json
+{
+  "recommendations": [
+    "ms-vscode.cmake-tools",
+    "llvm-vs-code-extensions.vscode-clangd",
+    "ms-vscode.cpptools",
+    "bierner.markdown-mermaid",
+    "yzhang.markdown-all-in-one"
+  ],
+  "unwantedRecommendations": []
+}
+```
+
+### A.18 `.clang-format`
+
+Code style used by format-on-save.
+
+```yaml
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 100
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: false
+```
+
+### A.19 `.clang-tidy`
+
+Static checks that clangd runs live.
+
+```yaml
+Checks: >
+  bugprone-*,
+  clang-analyzer-*,
+  performance-*,
+  -bugprone-easily-swappable-parameters
+WarningsAsErrors: ''
+```
+
+### A.20 `.gitignore`
+
+Keeps build output out of git.
+
+```text
+build/
+compile_commands.json
+.cache/
+*.o
+*.log
+```
+
+### A.21 Make the scripts executable
+
+```bash
+chmod +x scripts/observe_leak.sh scripts/bench_sanitizers.sh
+```
+
+### A.22 Build, test, and check
+
+```bash
+git init && git add -A && git commit -m "Phase 0 chapter 1: repo skeleton"
+cmake --preset debug
+cmake --build --preset debug -j
+ctest --preset debug
+./build/debug/lab/hello
+```
+
+**Expected:** the build finishes with no warnings, `ctest` reports `fd_test` passed (the test itself prints `fd_test: all checks passed`), and `hello` prints its PID.
+
+If `cmake --preset debug` prints an error, copy the full message and ask me. That first run is the real test of the CMake files.
