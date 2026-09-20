@@ -35,7 +35,7 @@ By the end of this chapter you can:
 Ubuntu (native), GCC, CMake, and:
 
 ```bash
-sudo apt install build-essential cmake gdb strace valgrind time git \
+sudo apt install build-essential cmake gdb strace valgrind git \
                  clangd clang-format clang-tidy
 ```
 
@@ -161,7 +161,6 @@ debugging-wizard/
 ├── lab/                    # throwaway experiments and deliberately broken programs
 ├── tests/                  # automated checks (ctest)
 ├── bench/                  # recorded benchmark results
-├── scripts/                # observe_leak.sh, bench_sanitizers.sh
 ├── docs/
 │   ├── environment.md      # your machine record
 │   └── notes/phase-0-ch1.md  # this note (later: phase-0-ch2.md, ...)
@@ -428,7 +427,7 @@ Why does `grep ... /proc/self/status` report the name and PID of `grep`, not you
 
 ## Step 1.6 — The Leak Experiment: VSZ vs RSS
 
-📄 **Full files:** Appendix A.7 (`leak_bounded.cpp`) and A.13 (`observe_leak.sh`).
+📄 **Full files:** Appendix A.7 (`leak_bounded.cpp`) and A.13 (`observe_pid.cpp`).
 
 `lab/leak_bounded.cpp` allocates 1 MB per second, touches one byte of each block, and never frees. It is bounded so it exits normally (LSan only reports at exit).
 
@@ -443,11 +442,33 @@ for (int i = 0; i < iterations; ++i) {
 }
 ```
 
-Observe it with the helper script (arguments: binary, iterations, samples, interval in seconds):
+### Observe it with our own C++ tool
+
+For a one-off you could watch `/proc` with shell one-liners. But reading `/proc/PID/status` is *exactly* the job Debugging Wizard exists to do, so we write the observer in C++ from the start. `lab/observe_pid.cpp` (Appendix A.13) is the first seed of the real tool. Start the leaker in the background and point the observer at it:
 
 ```bash
-scripts/observe_leak.sh build/debug/lab/leak_bounded 60 6 5
+./build/debug/lab/leak_bounded 60 > /dev/null &
+./build/debug/lab/observe_pid $! 6 5000      # pid, samples, interval in milliseconds
 ```
+
+`$!` is the PID of the most recent background job. The columns are elapsed seconds, `VmSize`, `VmRSS`, and the number of open descriptors.
+
+> **Why C++ and not a shell script?** (1) This *is* the job of the tool we are building, so writing it is practice. (2) A script hides the mechanism: `awk`, `grep`, and `sleep` each start a process, and those extra processes and syscalls are precisely the overhead we will later want to measure. (3) A C++ observer can be put under our own microscope with `strace`, ASan, and `run_measure`. Shell stays useful for *running* OS tools (`strace`, `valgrind`, `ulimit`, `watch`), which we invoke rather than write.
+
+### 🧠 THINK (about `observe_pid`)
+
+1. It sleeps with `clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, ...)` toward an **absolute deadline** that grows by exactly one interval each sample. Why not just call `sleep(5)` in a loop?
+2. It reads `/proc/PID/status` with a **single** `read()` into an 8 KB buffer. What could go wrong with that?
+3. How would you find out what `observe_pid` itself costs?
+
+<details>
+<summary>✅ Solution</summary>
+
+1. `sleep(5)` waits five seconds *after* the work of each sample, so every iteration takes `work + 5 s` and the sample times drift later and later. With an absolute deadline, the wait shrinks by however long the work took, so errors do not accumulate. Also, a signal can interrupt the sleep (`EINTR`), which is why the loop resumes waiting for the same deadline. Drift and jitter are the subject of Phase 1 Chapter 8.
+2. `read()` is allowed to return fewer bytes than exist, the file could be larger than the buffer, the content can change between reads, and the process can exit between `open` and `read`. For a 1-2 KB file a single read works in practice, but a tool meant to run for hours must loop until end-of-file and handle every failure. We do that properly in Chapters 2 and 3.
+3. Measure it from outside with `strace -c ./build/debug/lab/observe_pid $PID 5 1000` (count syscalls per sample) and with `run_measure` (Step 1.10). Putting our own tools under the microscope is the self-observation habit of the whole project.
+
+</details>
 
 ### 🔬 PREDICT (the original four questions)
 
@@ -706,53 +727,87 @@ ctest --preset asan
 
 Never claim "sanitizers make it 2x slower" without measuring on **your** machine and **your** workload.
 
-📄 **Full files:** Appendix A.11 (`bench.cpp`) and A.14 (`bench_sanitizers.sh`).
+📄 **Full files:** Appendix A.11 (`bench.cpp`) and A.14 (`run_measure.cpp`).
 
-`lab/bench.cpp` is an allocation-heavy workload (200 rounds of 20,000 small vectors).
+`lab/bench.cpp` is an allocation-heavy workload (200 rounds of 20,000 small vectors). To measure it we use `lab/run_measure.cpp`, our own mini `/usr/bin/time`. It performs the *parent's* half of the process lifecycle from Step 1.1: `fork` a child, `execvp` the command inside it, then `wait4`, which blocks until the child exits and returns the kernel's own accounting of that child (`rusage`): CPU time, peak RSS, and page faults.
 
 ```bash
-cmake --preset rel     && cmake --build --preset rel -j
+cmake --preset rel      && cmake --build --preset rel -j
 cmake --preset asan-rel && cmake --build --preset asan-rel -j
-scripts/bench_sanitizers.sh 5        # wall time and max RSS, 5 runs each
+
+./build/rel/lab/run_measure -n 5 -- ./build/rel/lab/bench
+./build/rel/lab/run_measure -n 5 -- ./build/asan-rel/lab/bench
 ```
 
-Both builds use `-O2 -g`, so the comparison is fair.
+The same measuring tool runs both, so only the measured program differs, and both use `-O2 -g`. Each run prints `wall`, `user`, and `sys` time, `maxrss`, minor and major page faults, and the exit code. The last line gives min, median, and max wall time.
+
+### 🧠 THINK (about `run_measure`)
+
+1. Why does the parent call `fflush(stdout)` before `fork()`?
+2. Why is `wait4` a better source than starting a stopwatch and reading `/proc/PID/status` afterward?
+3. `ru_maxrss` is a **peak**, not the value at exit. Why does that matter for a leak-detecting tool?
+
+<details>
+<summary>✅ Solution</summary>
+
+1. Buffered `stdio` text lives in *user-space* memory, and `fork` copies it into the child. If the child later flushed its copy, the output would be duplicated. Here the child `exec`s (the buffer is discarded), but flushing first is the safe habit and keeps output ordered.
+2. Once a process exits, its `/proc/PID` entry disappears, so there is nothing left to read. The kernel keeps the accounting until the parent collects it, and `wait4` hands it over. (This "exited but not yet collected" state is what a *zombie* process is, which we meet in Phase 2.)
+3. A peak shows the highest point reached even if it lasted milliseconds. A sampler that looks once per second can miss such a spike entirely. That is exactly the polling-versus-events problem of Phase 9, and the reason the kernel keeps high-water marks such as `VmHWM`.
+
+</details>
 
 ### 🔬 PREDICT
 
-| Config | Wall time | Max RSS |
-|--------|-----------|---------|
-| plain (`rel`) | ? | ? |
-| ASan+UBSan (`asan-rel`) | ?x plain | ?x plain |
+| Config | Wall time | Max RSS | Minor page faults |
+|--------|-----------|---------|-------------------|
+| plain (`rel`) | ? | ? | ? |
+| ASan+UBSan (`asan-rel`) | ?x plain | ?x plain | more or fewer? |
 
 <details>
 <summary>✅ Solution: what the reference run showed</summary>
 
-> **📊 Reference data (sandbox, GCC 13, one run each).**
-> | Config | Wall time | Max RSS |
-> |--------|-----------|---------|
-> | plain `-O2` | 0.51 s | 11.5 MB |
-> | ASan+UBSan `-O2` | 1.97 s (**3.9x**) | 383.6 MB (**33x**) |
+> **📊 Reference data (sandbox, GCC 13, `run_measure -n 3`).**
+> | Config | Wall (median) | user / sys CPU | Max RSS | Minor page faults |
+> |--------|---------------|----------------|---------|-------------------|
+> | plain `-O2` | 0.56 s | about 0.29 / 0.27 s | 9.25 MB | about 259,000 |
+> | ASan+UBSan `-O2` | 2.13 s (**3.8x**) | about 1.9 / 0.2 s | 383.5 MB (**41x**) | about 115,000 |
 
 Time was in the expected 2-4x range, but memory was **far above the "2-3x" folklore**. Why?
 
-**Hypothesis:** ASan's *quarantine*. To catch use-after-free, ASan does not reuse freed blocks right away; it holds up to a fixed budget (256 MB by default) of freed memory. Our workload frees millions of small blocks, so the quarantine fills.
+**Hypothesis 1: ASan's quarantine.** To catch use-after-free, ASan does not reuse freed blocks right away. It holds up to a fixed budget (256 MB by default) of freed memory, and our workload frees millions of small blocks.
 
-**Experiment (one variable changed):** rerun with a smaller quarantine.
+**Experiment (one variable changed):**
 
 ```bash
-ASAN_OPTIONS=quarantine_size_mb=1 ./build/asan-rel/lab/bench
+ASAN_OPTIONS=quarantine_size_mb=1 ./build/rel/lab/run_measure -n 5 -- ./build/asan-rel/lab/bench
 ```
 
-| Quarantine | Wall time | Max RSS |
-|------------|-----------|---------|
-| default (256 MB) | 1.93 s | 383.5 MB |
-| 1 MB | 1.58 s | 18.8 MB |
-| 0 | 1.51 s | 15.7 MB |
+| Quarantine | Wall time | user / sys CPU | Max RSS | Minor page faults |
+|------------|-----------|----------------|---------|-------------------|
+| default (256 MB) | 2.09-2.13 s | about 1.9 / 0.2 s | 383.5 MB | about 115,000 |
+| 1 MB (2 runs) | 2.07-2.27 s | about 2.1 / 0.01 s | 18.9 MB | about 7,000 |
 
-**Conclusion (evidence-supported):** the quarantine explains nearly all of the extra memory. It is a *fixed budget*, not a multiplier, which is why "ASan uses 2-3x memory" is unreliable for small programs (the fixed cost dominates) and for allocation-heavy ones (the budget fills). It also shows the trade-off: shrinking it saves memory but shortens the window in which ASan can catch a use-after-free.
+**Conclusion:** the quarantine explains nearly all of the extra memory. It is a *fixed budget*, not a multiplier, which is why "ASan uses 2-3x memory" fails for small programs (the fixed cost dominates) and for allocation-heavy ones (the budget fills). Wall time did **not** change clearly: page faults and kernel time dropped, but user time rose, and the net effect is within run-to-run noise. Shrinking the quarantine saves memory but shortens the window in which ASan can catch a use-after-free.
 
-**Method lessons:** repeat runs and look at the spread; compare like with like; change **one** variable at a time; record the machine in `docs/environment.md`. Your job now is to reproduce this on your Acer and see whether the same mechanism explains your numbers.
+**A surprise in the plain build.** The plain program spent about **half its wall time in the kernel** (`sys` about 0.27 s of 0.56 s) and took about **259,000 page faults** while holding only 9 MB.
+
+**Hypothesis 2:** glibc returns freed memory at the top of the heap to the kernel, and the next round faults those pages in again. Each round holds roughly 6 MB, so 200 rounds times about 6 MB divided by 4 KB pages is about 290,000 faults, close to what we observed.
+
+**Experiment (one variable each):** tell glibc not to give memory back.
+
+| Setting | Wall time | sys CPU | Minor page faults |
+|---------|-----------|---------|-------------------|
+| default | 0.556 s | about 0.24 s | about 259,000 |
+| `MALLOC_TRIM_THRESHOLD_=1073741824` | 0.260 s | about 0.005 s | about 1,730 |
+| `MALLOC_TOP_PAD_=67108864` | 0.264 s | about 0 s | about 1,590 |
+
+**Conclusion (evidence-supported for this workload):** about half the plain program's runtime was kernel time spent re-faulting pages the allocator had just returned. This is a measurement about *this* benchmark, not advice to set those variables everywhere. It shows why page faults and allocator behavior get their own phases (3 and 8).
+
+**A caution about ratios.** The 3.8x figure compares ASan against a plain build that is itself paying the trim-and-refault cost. Against the tuned baseline (0.26 s) the same ASan run would look about 8x slower. Overhead ratios are properties of a workload *and a baseline*, not of a tool.
+
+**Method lessons:** repeat runs and look at the spread; compare like with like; change **one** variable at a time; record the machine in `docs/environment.md`. Now reproduce this on your Acer and see whether the same mechanisms explain *your* numbers.
+
+> **Correction to an earlier draft.** A previous version of this note quoted 11.5 MB, "33x", and a quarantine speedup (about 1.9 s to 1.6 s). Those came from a Python timing script and one run each. Repeating with `run_measure` gave 9.25 MB for the plain build and did **not** reproduce the speedup. The two harnesses disagreed by about 2 MB for the identical binary. A plausible cause is that a forked child's peak includes its pre-exec parent image (Python alone is about 9 MB), but I did not prove that. The quarantine's effect on memory (about 383 MB down to about 19 MB) held up in both.
 
 </details>
 
@@ -817,10 +872,12 @@ Distinguishing measurements: `/proc/PID/smaps` shows *which mapping* grows; heap
 ### Exercises
 
 1. **Warnings as errors.** Configure with `-DDW_WERROR=ON`, introduce an unused variable in a lab file, and confirm the build fails. Then remove it.
-2. **Fix the leak.** Rewrite the loop in `leak_bounded.cpp` (in a copy, `leak_fixed.cpp`, registered in `lab/CMakeLists.txt`) with `std::unique_ptr<char[]>`. Show with `observe_leak.sh` that `VmSize` no longer grows. *Predict first, and think about what glibc does when a large mmap'd block is freed.*
-3. **Mini Debugging Wizard.** Write `lab/fd_count.cpp`: given a PID, print the entry count of `/proc/PID/fd` once per second using `<filesystem>` or `opendir`. Run it against `fd_leak`. Which failures must it handle (permission denied, the process disappears)?
+2. **Fix the leak.** Rewrite the loop in `leak_bounded.cpp` (in a copy, `leak_fixed.cpp`, registered in `lab/CMakeLists.txt`) with `std::unique_ptr<char[]>`. Show with `observe_pid` that `VmSize` no longer grows. *Predict first, and think about what glibc does when a large mmap'd block is freed.*
+3. **Extend the observer.** Add a `Threads:` column to `observe_pid` (from `/proc/PID/status`). Which fields can be *missing* for a kernel thread or a zombie, and how does `find_kb` behave when a key is absent?
+   *Then* run it against a process owned by another user (for example PID 1). **Predict** what the `fds` column shows and why, then check.
 4. **Break the RAII class.** Remove `= delete` from the copy constructor in a scratch copy of `fd.hpp`, then write a small program that copies an `Fd` and observe the double-close with `strace -e trace=close`.
-5. **Debug it.** Use the gdb session from Step 1.4 on `bugs overflow` in the `asan` preset with `ASAN_OPTIONS=detect_leaks=0`. Where does ASan abort, and what does gdb show at that point?
+5. **Observe the observer.** Run `strace -c ./build/debug/lab/observe_pid $PID 5 1000`. How many syscalls happen per sample, and which are ours versus the C++ runtime's startup?
+6. **Debug it.** Use the gdb session from Step 1.4 on `bugs overflow` in the `asan` preset with `ASAN_OPTIONS=detect_leaks=0`. Where does ASan abort, and what does gdb show at that point?
 
 ---
 
@@ -862,7 +919,7 @@ I can:
 
 ## Appendix A — Complete Code, File by File
 
-Everything needed to build this chapter is on this page, so you do not need any download. Each listing is the exact file that was compiled and tested while preparing this note (the C++ sources and `fd_test` were compiled with the same warning flags and run; the CMake files were not run through CMake, see the note in Step 1.3).
+Everything needed to build this chapter is on this page, so you do not need any download. Each listing is the exact file that was compiled and tested while preparing this note (the C++ sources and `fd_test` were compiled with the same warning flags and run; the CMake files were not run through CMake, see the honesty note in Step 1.3).
 
 **Convention for every future chapter:** code lives inside its note, so each note is self-contained.
 
@@ -871,11 +928,11 @@ Everything needed to build this chapter is on this page, so you do not need any 
 ```bash
 mkdir -p ~/debugging-wizard
 cd ~/debugging-wizard
-mkdir -p include/dw src lab tests bench docs/notes scripts .vscode
+mkdir -p include/dw src lab tests bench docs/notes .vscode
 touch src/.gitkeep bench/.gitkeep
 ```
 
-Then create each file below at the path in its heading. In VS Code: right-click the folder → **New File**, paste the listing. From a terminal you can also run `nano <path>` or `code <path>`.
+Then create each file below at the path in its heading. In VS Code: right-click the folder → **New File** and paste the listing. From a terminal you can also run `nano <path>` or `code <path>`.
 
 ### A.1 `CMakeLists.txt`
 
@@ -997,6 +1054,8 @@ dw_lab(bugs)
 dw_lab(fd_leak)
 dw_lab(fd_raii)
 dw_lab(bench)
+dw_lab(observe_pid)
+dw_lab(run_measure)
 ```
 
 ### A.4 `tests/CMakeLists.txt`
@@ -1319,61 +1378,224 @@ int main() {
 }
 ```
 
-### A.13 `scripts/observe_leak.sh`
+### A.13 `lab/observe_pid.cpp`
 
-Step 1.6: watch VmSize/VmRSS of a running program.
+Step 1.6: watch VmSize, VmRSS and open descriptors of a running process.
 
-```bash
-#!/usr/bin/env bash
-# Watch VmSize / VmRSS of a running program.
-# Usage: scripts/observe_leak.sh build/debug/lab/leak_bounded [iterations] [samples] [interval_s]
-set -euo pipefail
+```cpp
+// Watch VmSize, VmRSS and the open-descriptor count of a running process.
+// Usage: observe_pid <pid> [samples=10] [interval_ms=1000]
+//
+// A first, deliberately simple piece of Debugging Wizard: once per sample it
+// reads /proc/<pid>/status and counts the entries of /proc/<pid>/fd.
+#include <cerrno>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <ctime>
+#include <filesystem>
+#include <fcntl.h>
+#include <unistd.h>
 
-bin=${1:?usage: observe_leak.sh <binary> [iterations=60] [samples=6] [interval=5]}
-iters=${2:-60}
-samples=${3:-6}
-interval=${4:-5}
+#include "dw/fd.hpp"
 
-"$bin" "$iters" >/dev/null &
-pid=$!
-trap 'kill "$pid" 2>/dev/null || true' EXIT
+namespace {
 
-printf '%-8s %-12s %-12s\n' "t(s)" "VmSize(kB)" "VmRSS(kB)"
-for ((i = 0; i < samples; i++)); do
-    awk -v t="$((i * interval))" '
-        /^VmSize:/ { s = $2 }
-        /^VmRSS:/  { r = $2 }
-        END { printf "%-8s %-12s %-12s\n", t, s, r }' "/proc/$pid/status"
-    sleep "$interval"
-done
+struct Sample {
+    long vm_size_kb = -1;  // -1 means "field not present"
+    long vm_rss_kb = -1;
+    long fd_count = -1;
+};
+
+// Find "Key:   1234 kB" in the text and return 1234, or -1 if absent.
+long find_kb(const char* text, const char* key) {
+    const char* p = std::strstr(text, key);
+    if (p == nullptr) {
+        return -1;
+    }
+    long value = -1;
+    if (std::sscanf(p + std::strlen(key), "%ld", &value) != 1) {
+        return -1;
+    }
+    return value;
+}
+
+// Returns false if the process is gone or we lack permission.
+bool read_status(pid_t pid, Sample& out) {
+    char path[64];
+    std::snprintf(path, sizeof path, "/proc/%d/status", static_cast<int>(pid));
+
+    dw::Fd fd(::open(path, O_RDONLY));
+    if (!fd.valid()) {
+        return false;
+    }
+    char buf[8192];
+    ssize_t n = ::read(fd.get(), buf, sizeof buf - 1);  // one read: see Chapter 2 for why this is naive
+    if (n <= 0) {
+        return false;
+    }
+    buf[n] = '\0';
+    out.vm_size_kb = find_kb(buf, "VmSize:");
+    out.vm_rss_kb = find_kb(buf, "VmRSS:");
+    return true;
+}
+
+long count_fds(pid_t pid) {
+    char path[64];
+    std::snprintf(path, sizeof path, "/proc/%d/fd", static_cast<int>(pid));
+    std::error_code ec;
+    long n = 0;
+    for (std::filesystem::directory_iterator it(path, ec), end; !ec && it != end; it.increment(ec)) {
+        ++n;
+    }
+    return ec ? -1 : n;
+}
+
+double elapsed_s(const timespec& start) {
+    timespec now{};
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return static_cast<double>(now.tv_sec - start.tv_sec) +
+           static_cast<double>(now.tv_nsec - start.tv_nsec) / 1e9;
+}
+
+void add_ms(timespec& t, long ms) {
+    t.tv_sec += ms / 1000;
+    t.tv_nsec += (ms % 1000) * 1000000L;
+    if (t.tv_nsec >= 1000000000L) {
+        t.tv_sec += 1;
+        t.tv_nsec -= 1000000000L;
+    }
+}
+
+// Sleep until an ABSOLUTE point in time, so errors do not accumulate.
+void sleep_until(const timespec& deadline) {
+    while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &deadline, nullptr) == EINTR) {
+        // interrupted by a signal: resume waiting for the same deadline
+    }
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    if (argc < 2) {
+        std::fprintf(stderr, "usage: %s <pid> [samples=10] [interval_ms=1000]\n", argv[0]);
+        return 2;
+    }
+    const pid_t pid = static_cast<pid_t>(std::atoi(argv[1]));
+    const int samples = (argc > 2) ? std::atoi(argv[2]) : 10;
+    const long interval_ms = (argc > 3) ? std::atol(argv[3]) : 1000;
+    if (pid <= 0 || samples < 1 || interval_ms < 1) {
+        std::fprintf(stderr, "invalid argument\n");
+        return 2;
+    }
+
+    timespec start{};
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    timespec deadline = start;
+
+    std::printf("%-9s %-12s %-12s %-6s\n", "t(s)", "VmSize(kB)", "VmRSS(kB)", "fds");
+    for (int i = 0; i < samples; ++i) {
+        Sample s;
+        if (!read_status(pid, s)) {
+            std::fprintf(stderr, "cannot read /proc/%d/status (process gone or no permission)\n",
+                         static_cast<int>(pid));
+            return 1;
+        }
+        s.fd_count = count_fds(pid);
+        std::printf("%-9.3f %-12ld %-12ld %-6ld\n", elapsed_s(start), s.vm_size_kb, s.vm_rss_kb,
+                    s.fd_count);
+        add_ms(deadline, interval_ms);  // absolute deadline: no cumulative drift
+        sleep_until(deadline);
+    }
+    return 0;
+}
 ```
 
-### A.14 `scripts/bench_sanitizers.sh`
+### A.14 `lab/run_measure.cpp`
 
-Step 1.10: compare plain vs ASan wall time and max RSS.
+Step 1.10: our own mini `/usr/bin/time` using fork, execvp, wait4.
 
-```bash
-#!/usr/bin/env bash
-# Compare wall time and max RSS of lab/bench: plain vs ASan+UBSan.
-# Needs GNU time:  sudo apt install time
-# Build first:  cmake --preset rel && cmake --build --preset rel -j
-#               cmake --preset asan-rel && cmake --build --preset asan-rel -j
-set -euo pipefail
+```cpp
+// A tiny replacement for /usr/bin/time: run a command N times and report
+// wall time, CPU time, peak RSS and page faults as seen by the KERNEL.
+// Usage: run_measure [-n runs] -- command [args...]
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <vector>
 
-runs=${1:-3}
-for preset in rel asan-rel; do
-    bin="build/$preset/lab/bench"
-    if [[ ! -x $bin ]]; then
-        echo "missing $bin (build the '$preset' preset first)" >&2
-        exit 1
-    fi
-    echo "== $preset =="
-    for ((i = 1; i <= runs; i++)); do
-        /usr/bin/time -v "$bin" 2>&1 >/dev/null |
-            awk '/Elapsed/ { w = $NF } /Maximum resident/ { m = $NF }
-                 END { printf "  run: wall=%s  maxrss_kB=%s\n", w, m }'
-    done
-done
+namespace {
+
+double to_seconds(const timeval& tv) {
+    return static_cast<double>(tv.tv_sec) + static_cast<double>(tv.tv_usec) / 1e6;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    int runs = 1;
+    int i = 1;
+    if (i + 1 < argc && std::strcmp(argv[i], "-n") == 0) {
+        runs = std::atoi(argv[i + 1]);
+        i += 2;
+    }
+    if (i < argc && std::strcmp(argv[i], "--") == 0) {
+        ++i;
+    }
+    if (i >= argc || runs < 1) {
+        std::fprintf(stderr, "usage: %s [-n runs] -- command [args...]\n", argv[0]);
+        return 2;
+    }
+    char** cmd = &argv[i];
+
+    std::vector<double> walls;
+    long worst_rss_kb = 0;
+
+    for (int r = 1; r <= runs; ++r) {
+        std::fflush(stdout);  // do not let buffered output be duplicated or reordered around fork
+        const auto t0 = std::chrono::steady_clock::now();
+
+        const pid_t pid = fork();
+        if (pid < 0) {
+            std::perror("fork");
+            return 1;
+        }
+        if (pid == 0) {
+            execvp(cmd[0], cmd);
+            std::perror("execvp");  // only reached if exec failed
+            _exit(127);
+        }
+
+        int status = 0;
+        rusage ru{};
+        if (wait4(pid, &status, 0, &ru) < 0) {  // wait AND collect the child's resource usage
+            std::perror("wait4");
+            return 1;
+        }
+        const auto t1 = std::chrono::steady_clock::now();
+
+        const double wall = std::chrono::duration<double>(t1 - t0).count();
+        const int code = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+        walls.push_back(wall);
+        worst_rss_kb = std::max(worst_rss_kb, static_cast<long>(ru.ru_maxrss));  // kB on Linux
+
+        std::printf("run %d: wall=%.3f s  user=%.3f s  sys=%.3f s  maxrss=%ld kB  minflt=%ld  majflt=%ld  exit=%d\n",
+                    r, wall, to_seconds(ru.ru_utime), to_seconds(ru.ru_stime),
+                    static_cast<long>(ru.ru_maxrss), static_cast<long>(ru.ru_minflt),
+                    static_cast<long>(ru.ru_majflt), code);
+    }
+
+    std::vector<double> sorted = walls;
+    std::sort(sorted.begin(), sorted.end());
+    std::printf("summary: runs=%d  wall min=%.3f s  median=%.3f s  max=%.3f s  worst maxrss=%ld kB\n",
+                runs, sorted.front(), sorted[sorted.size() / 2], sorted.back(), worst_rss_kb);
+    return 0;
+}
 ```
 
 ### A.15 `.vscode/settings.json`
@@ -1512,13 +1734,7 @@ compile_commands.json
 *.log
 ```
 
-### A.21 Make the scripts executable
-
-```bash
-chmod +x scripts/observe_leak.sh scripts/bench_sanitizers.sh
-```
-
-### A.22 Build, test, and check
+### A.21 Build, test, and check
 
 ```bash
 git init && git add -A && git commit -m "Phase 0 chapter 1: repo skeleton"
@@ -1526,8 +1742,9 @@ cmake --preset debug
 cmake --build --preset debug -j
 ctest --preset debug
 ./build/debug/lab/hello
+./build/debug/lab/run_measure -- ./build/debug/lab/hello
 ```
 
-**Expected:** the build finishes with no warnings, `ctest` reports `fd_test` passed (the test itself prints `fd_test: all checks passed`), and `hello` prints its PID.
+**Expected:** the build finishes with no warnings; `ctest` reports `fd_test` passed (the test itself prints `fd_test: all checks passed`); `hello` prints its PID; and `run_measure` prints one `run 1:` line ending in `exit=0` plus a summary line.
 
 If `cmake --preset debug` prints an error, copy the full message and ask me. That first run is the real test of the CMake files.
