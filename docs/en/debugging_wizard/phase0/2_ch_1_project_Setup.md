@@ -61,6 +61,16 @@ Debugging Wizard is a **long-running** program that will diagnose other programs
 | 1.10 | Measure the cost of sanitizers |
 | 1.11 | Explain-it-back, knowledge check, completion |
 
+### 0.5 Project Conventions (apply to every chapter)
+
+| Convention | Rule |
+|------------|------|
+| Code lives in the note | Every chapter note is self-contained: complete code in the note or its appendix, no archives. |
+| Predict before you run | Write the prediction first, then run, then compare. |
+| **Scripts vs C++** | **Shell is fine for short glue**: starting a process in the background, `ulimit`, `watch`, one-off `strace`/`valgrind` runs, a quick loop. **Benchmarking and measurement are always C++**: anything that produces a number we report (`run_measure`, `observe_pid`, and later the collectors) is written in C++, so its own overhead is visible to the same tools and results are reproducible from the repo. No benchmark scripts. |
+| Change one variable | Isolate one change per experiment, and repeat runs to see the spread. |
+| Record the machine | Keep `docs/environment.md` current next to every result. |
+
 ---
 
 ## Step 1.1 — From Source to Running Process
@@ -453,7 +463,7 @@ For a one-off you could watch `/proc` with shell one-liners. But reading `/proc/
 
 `$!` is the PID of the most recent background job. The columns are elapsed seconds, `VmSize`, `VmRSS`, and the number of open descriptors.
 
-> **Why C++ and not a shell script?** (1) This *is* the job of the tool we are building, so writing it is practice. (2) A script hides the mechanism: `awk`, `grep`, and `sleep` each start a process, and those extra processes and syscalls are precisely the overhead we will later want to measure. (3) A C++ observer can be put under our own microscope with `strace`, ASan, and `run_measure`. Shell stays useful for *running* OS tools (`strace`, `valgrind`, `ulimit`, `watch`), which we invoke rather than write.
+> **Why C++ here, when shell is fine for short things?** By our convention (0.5), shell is for short glue, but *measurement* code is C++. (1) Reading `/proc/PID/status` is exactly the job Debugging Wizard exists to do, so writing it is practice. (2) A script hides the mechanism: `awk`, `grep`, and `sleep` each start a process, and those extra processes and syscalls are precisely the overhead we will later want to measure. (3) A C++ observer can be put under our own microscope with `strace`, ASan, and `run_measure`. Shell remains the right tool for *running* OS tools (`strace`, `valgrind`, `ulimit`, `watch`), which we invoke rather than write.
 
 ### 🧠 THINK (about `observe_pid`)
 
