@@ -25,8 +25,13 @@ graph TD
         TS --> SIGNALS["signal_struct *, sighand_struct * <br/> Signals & Handlers"]
         TS --> CRED["cred *real_cred, *cred <br/> UID, GID, Capabilities"]
 
-        %% Memory details under mm_struct
-        MM --> VMA["vm_area_struct / VMAs <br/> Code, Data, BSS, Heap, Stack mappings"]
+        %% mm_struct internal blocks
+        MM --> MM_VMA["1. VMA List / RB-Tree <br/> vm_area_struct nodes"]
+        MM --> MM_PT["2. Page Table Root <br/> pgd Page Global Directory"]
+        MM --> MM_STATS["3. VM Size & Statistics <br/> total_vm, locked_vm, etc."]
+
+        %% Memory details under VMA
+        MM_VMA --> VMA["vm_area_struct / VMAs <br/> Code, Data, BSS, Heap, Stack mappings"]
         
         %% File table details under files_struct
         FILES --> FDTABLE["fd_array / file open_files[] <br/> Points to open struct file instances"]
@@ -45,6 +50,9 @@ graph TD
     style P_MAPS fill:#6f42c1,stroke:#fff,stroke-width:2px,color:#fff
     style P_FD fill:#6f42c1,stroke:#fff,stroke-width:2px,color:#fff
     style P_TASK fill:#6f42c1,stroke:#fff,stroke-width:2px,color:#fff
+    style MM_VMA fill:#17a2b8,stroke:#fff,stroke-width:2px,color:#fff
+    style MM_PT fill:#17a2b8,stroke:#fff,stroke-width:2px,color:#fff
+    style MM_STATS fill:#17a2b8,stroke:#fff,stroke-width:2px,color:#fff
 ```
 
 ---
