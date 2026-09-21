@@ -2,6 +2,90 @@
 
 ## Chapter 2.1 — Process
 
+```mermaid
+graph TD
+    subgraph Userspace_Endpoints ["Userspace Diagnostic Endpoints: /proc/pid/"]
+        P_STATUS["/proc/[pid]/status <br/> Identity, State, UID/GID"]
+        P_MAPS["/proc/[pid]/maps <br/> Virtual Memory / VMAs"]
+        P_FD["/proc/[pid]/fd/ <br/> Open File Descriptors"]
+        P_TASK["/proc/[pid]/task/ <br/> Thread Group / TIDs"]
+    end
+
+    subgraph Kernel_Space ["Linux Kernel Space: task_struct"]
+        TS["task_struct <br/> Kernel Thread/Task Control Block"]
+        
+        %% Core Sub-structures
+        TS --> STATE["state / exit_state <br/> Running, Sleeping, Stopped, Zombie"]
+        TS --> ID["pid, tgid, real_parent, group_leader <br/> Process & Thread Identity"]
+        TS --> SCHED["sched_class, policy, prio <br/> CPU Scheduler Metadata"]
+        
+        %% Resource Pointers
+        TS --> MM["mm_struct *mm <br/> Virtual Memory Descriptor"]
+        TS --> FILES["files_struct *files <br/> Open File Descriptors Table"]
+        TS --> SIGNALS["signal_struct *, sighand_struct * <br/> Signals & Handlers"]
+        TS --> CRED["cred *real_cred, *cred <br/> UID, GID, Capabilities"]
+
+        %% Memory details under mm_struct
+        MM --> VMA["vm_area_struct / VMAs <br/> Code, Data, BSS, Heap, Stack mappings"]
+        
+        %% File table details under files_struct
+        FILES --> FDTABLE["fd_array / file open_files[] <br/> Points to open struct file instances"]
+    end
+
+    %% Mapping Userspace Endpoints to Kernel Structures
+    P_STATUS -.-> TS
+    P_MAPS -.-> VMA
+    P_FD -.-> FDTABLE
+    P_TASK -.-> ID
+
+    style TS fill:#2b3137,stroke:#fff,stroke-width:2px,color:#fff
+    style MM fill:#0366d6,stroke:#fff,stroke-width:2px,color:#fff
+    style FILES fill:#28a745,stroke:#fff,stroke-width:2px,color:#fff
+    style P_STATUS fill:#6f42c1,stroke:#fff,stroke-width:2px,color:#fff
+    style P_MAPS fill:#6f42c1,stroke:#fff,stroke-width:2px,color:#fff
+    style P_FD fill:#6f42c1,stroke:#fff,stroke-width:2px,color:#fff
+    style P_TASK fill:#6f42c1,stroke:#fff,stroke-width:2px,color:#fff
+```
+
+---
+
+```mermaid
+graph TD
+    subgraph Kernel_Space ["Linux Kernel Space"]
+        subgraph Process_Container ["Process Container (Shared Resources)"]
+            MM["mm_struct <br/> (Shared Address Space / VMAs)"]
+            FILES["files_struct <br/> (Shared File Descriptor Table)"]
+        end
+
+        TS1["task_struct <br/> (Thread 1 / Leader) <br/> pid = 5001, tgid = 5001"] --> MM
+        TS1 --> FILES
+
+        TS2["task_struct <br/> (Thread 2 / Worker) <br/> pid = 5002, tgid = 5001"] --> MM
+        TS2 --> FILES
+    end
+
+    subgraph Userspace_Identification ["How the System Knows & Inspects Them"]
+        SYS_CALL["getpid() syscall <br/> Returns TGID (5001) for both threads"]
+        SYS_GETTID["gettid() syscall <br/> Returns distinct PID/TID (5001 vs 5002)"]
+        PROC_TASK["/proc/5001/task/ <br/> Contains subdirectories '5001' and '5002'"]
+        PS_CMD["ps -T -p 5001 <br/> Shows two rows sharing PID 5001"]
+    end
+
+    %% Mappings from kernel to userspace identification
+    TS1 -.-> SYS_GETTID
+    TS2 -.-> SYS_GETTID
+    TS1 -.-> PROC_TASK
+    TS2 -.-> PROC_TASK
+
+    style TS1 fill:#2b3137,stroke:#fff,stroke-width:2px,color:#fff
+    style TS2 fill:#2b3137,stroke:#fff,stroke-width:2px,color:#fff
+    style MM fill:#0366d6,stroke:#fff,stroke-width:2px,color:#fff
+    style FILES fill:#28a745,stroke:#fff,stroke-width:2px,color:#fff
+    style SYS_CALL fill:#6f42c1,stroke:#fff,stroke-width:2px,color:#fff
+    style SYS_GETTID fill:#6f42c1,stroke:#fff,stroke-width:2px,color:#fff
+    style PROC_TASK fill:#6f42c1,stroke:#fff,stroke-width:2px,color:#fff
+    style PS_CMD fill:#6f42c1,stroke:#fff,stroke-width:2px,color:#fff
+```
 ### 🧠 One-Sentence Mental Model
 > A process is the OS's unit of *ownership* — one private address space plus everything needed to run code in it — while the thread (next chapter) is the OS's unit of *execution*. Confusing the two is the single most common source of confusion in this entire part.
 
