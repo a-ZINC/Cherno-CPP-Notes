@@ -71,9 +71,9 @@ flowchart TD
     M --> PT[Page tables: virtual to physical]
     M --> C[Counters: total size, resident pages by kind, peak]
     PT --> MMU[MMU hardware walks them on every access]
-    C --> P1[/proc/PID/status]
-    V --> P2[/proc/PID/maps]
-    F --> P3[/proc/PID/fd]
+    C --> P1["/proc/PID/status"]
+    V --> P2["/proc/PID/maps"]
+    F --> P3["/proc/PID/fd"]
 ```
 
 **How to read this diagram:**
