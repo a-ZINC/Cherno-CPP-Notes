@@ -219,9 +219,9 @@ Until now everything lived in `lab/`. This chapter's reader is used by later pha
 ```mermaid
 flowchart LR
     A[MMU: page tables and fault exceptions] --> B[Kernel: mm_struct counters, per-task usage]
-    B --> C1[/proc/self/status: text formatted on read]
+    B --> C1["/proc/self/status: text formatted on read"]
     B --> C2[getrusage syscall: binary struct]
-    B --> C3[/proc/self/maps: one line per VMA]
+    B --> C3["/proc/self/maps: one line per VMA"]
     C1 --> D[read_file: open, read until EOF, close]
     C3 --> D
     D --> E[parse with string_view and from_chars, or sscanf]
