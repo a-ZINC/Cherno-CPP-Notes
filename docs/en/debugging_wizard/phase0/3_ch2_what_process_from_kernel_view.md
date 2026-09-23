@@ -212,7 +212,7 @@ A page fault is not an error. "Fault" is just the CPU's name for the exception t
 
 Until now everything lived in `lab/`. This chapter's reader is used by later phases, so it **earns its place in `src/`** as the static library `dw_core`.
 
-📄 **Full files:** Appendix A.4 (`src/CMakeLists.txt`), A.5 (`proc_self.hpp`), A.6 (`proc_self.cpp`). Updated CMake files: A.1, A.2, A.3. Test: A.11.
+📄 **Full files:** Appendix A.4 (`src/CMakeLists.txt`), A.7 (`proc_self.hpp`), A.8 (`proc_self.cpp`). Updated CMake files: A.1, A.2, A.3. Test: A.12.
 
 ### Where does each number come from?
 
@@ -326,7 +326,7 @@ Instrumented and uninstrumented code mixed in one program can hide bugs at the b
 
 ## Step 2.5 — Experiment: Demand Paging
 
-📄 **Full file:** Appendix A.8 (`touch_pages.cpp`).
+📄 **Full file:** Appendix A.10 (`touch_pages.cpp`).
 
 `touch_pages` maps 256 MB of anonymous memory and walks through six steps, printing the kernel's numbers after each:
 
@@ -405,7 +405,7 @@ ASan reserves a vast range of address space for its shadow memory, but almost no
 
 ## Step 2.6 — Where Do `malloc`'d Bytes Live?
 
-📄 **Full file:** Appendix A.9 (`heap_vs_mmap.cpp`).
+📄 **Full file:** Appendix A.11 (`heap_vs_mmap.cpp`).
 
 `malloc` is a user-space library function. Underneath, glibc asks the kernel for memory with `brk` (growing the `[heap]` region) or `mmap` (a fresh anonymous region). `heap_vs_mmap` allocates six sizes and uses `find_map` to ask which mapping contains each pointer.
 
@@ -465,7 +465,7 @@ The three small requests share `[heap]`. The three large ones (above 128 KiB) ea
 
 ## Step 2.7 — Validate Against Independent Views
 
-A number is trustworthy when an **independent** route gives the same answer. `maps_summary` (Appendix A.7) sums the sizes of all VMAs and compares the total with `VmSize`:
+A number is trustworthy when an **independent** route gives the same answer. `maps_summary` (Appendix A.9) sums the sizes of all VMAs and compares the total with `VmSize`:
 
 ```bash
 ./build/debug/lab/maps_summary
@@ -533,7 +533,7 @@ Real `/proc` reading fails in specific, predictable ways. Predict each, then try
 
 ## Step 2.9 — Measure Our Own Cost
 
-Reading `status` is not free. `lab/bench_snapshot.cpp` (Appendix A.10) calls `read_mem_snapshot` N times and reports the time per call. This time the **timer lives inside the program itself**, so there is no separate tool to build or run:
+Reading `status` is not free. `bench/bench_snapshot.cpp` (Appendix A.6) calls `read_mem_snapshot` N times and reports the time per call. This time the **timer lives inside the program itself**, so there is no separate tool to build or run:
 
 ```cpp
 const rusage ru_before = self_usage();               // getrusage(RUSAGE_SELF): our own CPU time so far
@@ -554,9 +554,11 @@ const rusage ru_after = self_usage();
 cmake --preset rel   && cmake --build --preset rel -j     # -O2 build
 cmake --preset debug && cmake --build --preset debug -j   # -O0 build, for comparison
 
-./build/rel/lab/bench_snapshot 50000
-./build/debug/lab/bench_snapshot 50000
+./build/rel/bench/bench_snapshot 50000
+./build/debug/bench/bench_snapshot 50000
 ```
+
+> **Why `bench/`, not `lab/`?** `lab/` is for throwaway experiments and deliberately broken programs (Chapter 1's rule). A benchmark is neither: it is a small piece of permanent tooling whose whole job is to produce a trustworthy number, and future chapters will want to run it again and compare. So it gets its own top-level folder, built by its own `bench/CMakeLists.txt` and linked straight against `dw_core`, the same way `lab/`'s `dw_lab_core` programs are. *(Chapter 1's `lab/bench.cpp` and `lab/run_measure.cpp` predate this distinction and still live in `lab/`; moving them is a Chapter 1 change, not made here.)*
 
 ### 🧠 THINK
 
@@ -619,7 +621,7 @@ cmake --preset debug && cmake --build --preset debug -j   # -O0 build, for compa
 An earlier draft of this chapter predicted `openat`, two `read`s, `close`, and `getrusage` per snapshot, verified with `strace -c`. `strace` was not available while re-testing this version, so that specific claim is **unverified here** — check it yourself:
 
 ```bash
-strace -c -e trace=openat,read,close,getrusage ./build/debug/lab/bench_snapshot 1000
+strace -c -e trace=openat,read,close,getrusage ./build/debug/bench/bench_snapshot 1000
 ```
 
 **PREDICT before running:** how many of each syscall do you expect for 1,000 calls, and why two `read`s per call rather than one?
@@ -734,14 +736,11 @@ Everything new or changed in this chapter is on this page; no download is needed
 
 ```bash
 cd ~/debugging-wizard
-mkdir -p src        # already exists from Chapter 1 (it held only .gitkeep)
+mkdir -p src bench   # both already exist from Chapter 1 (they held only .gitkeep)
 ```
 
 Create or replace each file at the path in its heading. In VS Code: right-click the folder → **New File**, and paste the listing.
-
 ### A.1 `CMakeLists.txt`
-
-**Replaces the Chapter 1 version.** Adds `add_subdirectory(src)`.
 
 ```cmake
 cmake_minimum_required(VERSION 3.25)
@@ -759,6 +758,7 @@ endif()
 option(DW_SANITIZE    "Build with AddressSanitizer + UBSan" OFF)
 option(DW_WERROR      "Treat warnings as errors"            OFF)
 option(DW_BUILD_LAB   "Build lab experiments"               ON)
+option(DW_BUILD_BENCH "Build benchmark programs"            ON)
 option(DW_BUILD_TESTS "Build tests"                         ON)
 
 # One INTERFACE target carries include paths, warnings and sanitizer flags
@@ -784,6 +784,10 @@ if(DW_BUILD_LAB)
   add_subdirectory(lab)
 endif()
 
+if(DW_BUILD_BENCH)
+  add_subdirectory(bench)
+endif()
+
 if(DW_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
@@ -791,8 +795,6 @@ endif()
 ```
 
 ### A.2 `lab/CMakeLists.txt`
-
-**Replaces the Chapter 1 version.** Adds `dw_lab_core` and the four new programs.
 
 ```cmake
 # Lab = throwaway experiments and deliberately broken programs.
@@ -820,7 +822,6 @@ endfunction()
 dw_lab_core(maps_summary)
 dw_lab_core(touch_pages)
 dw_lab_core(heap_vs_mmap)
-dw_lab_core(bench_snapshot)
 ```
 
 ### A.3 `tests/CMakeLists.txt`
@@ -836,7 +837,6 @@ add_executable(proc_self_test proc_self_test.cpp)
 target_link_libraries(proc_self_test PRIVATE dw_core)
 add_test(NAME proc_self_test COMMAND proc_self_test)
 ```
-
 ### A.4 `src/CMakeLists.txt`
 
 **New.** The static library `dw_core`.
@@ -846,8 +846,98 @@ add_test(NAME proc_self_test COMMAND proc_self_test)
 add_library(dw_core STATIC proc_self.cpp)
 target_link_libraries(dw_core PUBLIC dw_options)
 ```
+### A.5 `bench/CMakeLists.txt`
+**New.** Registers the benchmark programs; links them against `dw_core`.
+```cmake
+# bench/ = programs that MEASURE, built against the real tool (dw_core).
+# Distinct from lab/, which holds throwaway experiments and broken programs.
+function(dw_bench name)
+  add_executable(${name} ${name}.cpp)
+  target_link_libraries(${name} PRIVATE dw_core)
+endfunction()
 
-### A.5 `include/dw/proc_self.hpp`
+dw_bench(bench_snapshot)
+```
+
+### A.6 `bench/bench_snapshot.cpp`
+**New.** Step 2.9: cost of one snapshot, timed with `std::chrono` and `getrusage` from inside the same process (no external benchmarking tool needed).
+```cpp
+// How much does ONE memory snapshot cost? Self-contained: no external timing
+// tool needed. Times N calls of dw::read_mem_snapshot with a plain monotonic
+// clock, and separately asks the kernel for OUR OWN user/sys CPU time via
+// getrusage (before/after), so we split wall time into "our CPU" and
+// "everything else" (scheduling delay, other processes) without forking.
+//
+// Usage: bench_snapshot [calls=20000]
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <sys/resource.h>
+
+#include "dw/proc_self.hpp"
+
+namespace {
+
+// Seconds from a timeval, as a double.
+double to_seconds(const timeval& tv) {
+    return static_cast<double>(tv.tv_sec) + static_cast<double>(tv.tv_usec) / 1e6;
+}
+
+rusage self_usage() {
+    rusage ru{};
+    ::getrusage(RUSAGE_SELF, &ru);   // one syscall; asks the KERNEL for our own accounting
+    return ru;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    const long calls = (argc > 1) ? std::atol(argv[1]) : 20000;
+    if (calls < 1) {
+        std::fprintf(stderr, "usage: %s [calls>=1]\n", argv[0]);
+        return 2;
+    }
+
+    dw::MemSnapshot s;
+    if (!dw::read_mem_snapshot(s)) {  // warm-up call: also proves the interface works
+        std::fprintf(stderr, "cannot read /proc/self/status\n");
+        return 1;
+    }
+
+    long sink = 0;  // keeps the loop's result observable, so it cannot be optimized away
+
+    // --- the timer: wall clock via chrono, CPU time via getrusage ---
+    const rusage ru_before = self_usage();
+    const auto t0 = std::chrono::steady_clock::now();
+
+    for (long i = 0; i < calls; ++i) {
+        if (!dw::read_mem_snapshot(s)) {
+            std::fprintf(stderr, "read failed at call %ld\n", i);
+            return 1;
+        }
+        sink += s.vm_rss_kb;
+    }
+
+    const auto t1 = std::chrono::steady_clock::now();
+    const rusage ru_after = self_usage();
+    // --- end timer ---
+
+    const double wall_s = std::chrono::duration<double>(t1 - t0).count();
+    const double user_s = to_seconds(ru_after.ru_utime) - to_seconds(ru_before.ru_utime);
+    const double sys_s = to_seconds(ru_after.ru_stime) - to_seconds(ru_before.ru_stime);
+    const long minflt = ru_after.ru_minflt - ru_before.ru_minflt;
+
+    std::printf("calls=%ld\n", calls);
+    std::printf("wall total = %.4f s   (%.2f us/call)\n", wall_s, wall_s / static_cast<double>(calls) * 1e6);
+    std::printf("user total = %.4f s   (%.2f us/call)\n", user_s, user_s / static_cast<double>(calls) * 1e6);
+    std::printf("sys  total = %.4f s   (%.2f us/call)\n", sys_s, sys_s / static_cast<double>(calls) * 1e6);
+    std::printf("minor faults during loop = %ld\n", minflt);
+    std::printf("(sink=%ld, ignore: keeps the compiler from deleting the loop)\n", sink);
+    return 0;
+}
+```
+
+### A.7 `include/dw/proc_self.hpp`
 
 **New.** Public interface: `read_file`, `MemSnapshot`, `MapEntry`, `read_maps`, `find_map`.
 
@@ -898,8 +988,7 @@ const MapEntry* find_map(const std::vector<MapEntry>& maps, const void* addr);
 
 }  // namespace dw
 ```
-
-### A.6 `src/proc_self.cpp`
+### A.8 `src/proc_self.cpp`
 
 **New.** The implementation (first code in `src/`).
 
@@ -1060,8 +1149,7 @@ const MapEntry* find_map(const std::vector<MapEntry>& maps, const void* addr) {
 
 }  // namespace dw
 ```
-
-### A.7 `lab/maps_summary.cpp`
+### A.9 `lab/maps_summary.cpp`
 
 **New.** Step 2.7: sum the maps and compare with `VmSize`.
 
@@ -1126,8 +1214,7 @@ int main() {
     return 0;
 }
 ```
-
-### A.8 `lab/touch_pages.cpp`
+### A.10 `lab/touch_pages.cpp`
 
 **New.** Step 2.5: demand paging, step by step.
 
@@ -1215,8 +1302,7 @@ int main(int argc, char** argv) {
     return 0;
 }
 ```
-
-### A.9 `lab/heap_vs_mmap.cpp`
+### A.11 `lab/heap_vs_mmap.cpp`
 
 **New.** Step 2.6: which region does each `malloc` land in.
 
@@ -1260,86 +1346,7 @@ int main() {
     return 0;
 }
 ```
-
-### A.10 `lab/bench_snapshot.cpp`
-**New.** Step 2.9: cost of one snapshot, timed with `std::chrono` and `getrusage` from inside the same process (no external benchmarking tool needed).
-```cpp
-// How much does ONE memory snapshot cost? Self-contained: no external timing
-// tool needed. Times N calls of dw::read_mem_snapshot with a plain monotonic
-// clock, and separately asks the kernel for OUR OWN user/sys CPU time via
-// getrusage (before/after), so we split wall time into "our CPU" and
-// "everything else" (scheduling delay, other processes) without forking.
-//
-// Usage: bench_snapshot [calls=20000]
-#include <chrono>
-#include <cstdio>
-#include <cstdlib>
-#include <sys/resource.h>
-
-#include "dw/proc_self.hpp"
-
-namespace {
-
-// Seconds from a timeval, as a double.
-double to_seconds(const timeval& tv) {
-    return static_cast<double>(tv.tv_sec) + static_cast<double>(tv.tv_usec) / 1e6;
-}
-
-rusage self_usage() {
-    rusage ru{};
-    ::getrusage(RUSAGE_SELF, &ru);   // one syscall; asks the KERNEL for our own accounting
-    return ru;
-}
-
-}  // namespace
-
-int main(int argc, char** argv) {
-    const long calls = (argc > 1) ? std::atol(argv[1]) : 20000;
-    if (calls < 1) {
-        std::fprintf(stderr, "usage: %s [calls>=1]\n", argv[0]);
-        return 2;
-    }
-
-    dw::MemSnapshot s;
-    if (!dw::read_mem_snapshot(s)) {  // warm-up call: also proves the interface works
-        std::fprintf(stderr, "cannot read /proc/self/status\n");
-        return 1;
-    }
-
-    long sink = 0;  // keeps the loop's result observable, so it cannot be optimized away
-
-    // --- the timer: wall clock via chrono, CPU time via getrusage ---
-    const rusage ru_before = self_usage();
-    const auto t0 = std::chrono::steady_clock::now();
-
-    for (long i = 0; i < calls; ++i) {
-        if (!dw::read_mem_snapshot(s)) {
-            std::fprintf(stderr, "read failed at call %ld\n", i);
-            return 1;
-        }
-        sink += s.vm_rss_kb;
-    }
-
-    const auto t1 = std::chrono::steady_clock::now();
-    const rusage ru_after = self_usage();
-    // --- end timer ---
-
-    const double wall_s = std::chrono::duration<double>(t1 - t0).count();
-    const double user_s = to_seconds(ru_after.ru_utime) - to_seconds(ru_before.ru_utime);
-    const double sys_s = to_seconds(ru_after.ru_stime) - to_seconds(ru_before.ru_stime);
-    const long minflt = ru_after.ru_minflt - ru_before.ru_minflt;
-
-    std::printf("calls=%ld\n", calls);
-    std::printf("wall total = %.4f s   (%.2f us/call)\n", wall_s, wall_s / static_cast<double>(calls) * 1e6);
-    std::printf("user total = %.4f s   (%.2f us/call)\n", user_s, user_s / static_cast<double>(calls) * 1e6);
-    std::printf("sys  total = %.4f s   (%.2f us/call)\n", sys_s, sys_s / static_cast<double>(calls) * 1e6);
-    std::printf("minor faults during loop = %ld\n", minflt);
-    std::printf("(sink=%ld, ignore: keeps the compiler from deleting the loop)\n", sink);
-    return 0;
-}
-```
-
-### A.11 `tests/proc_self_test.cpp`
+### A.12 `tests/proc_self_test.cpp`
 
 **New.** Step 2.4: tests for `dw_core`.
 
@@ -1450,8 +1457,7 @@ int main() {
     return 0;
 }
 ```
-
-### A.12 Build, test, and run
+### A.13 Build, test, and run
 
 ```bash
 cmake --preset debug
@@ -1460,8 +1466,9 @@ ctest --preset debug
 ./build/debug/lab/maps_summary
 ./build/debug/lab/touch_pages 256
 ./build/debug/lab/heap_vs_mmap
+./build/debug/bench/bench_snapshot 5000
 ```
 
-**Expected:** the build finishes with no warnings; `ctest` reports both `fd_test` and `proc_self_test` passed (`proc_self_test` prints `proc_self_test: all checks passed`); `maps_summary` prints a category table where the total exceeds `VmSize` by about 4 kB; `touch_pages` prints seven rows.
+**Expected:** the build finishes with no warnings; `ctest` reports both `fd_test` and `proc_self_test` passed (`proc_self_test` prints `proc_self_test: all checks passed`); `maps_summary` prints a category table where the total exceeds `VmSize` by about 4 kB; `touch_pages` prints seven rows; `bench_snapshot` prints wall/user/sys timing and ends with a `minor faults during loop` line.
 
 If the CMake step prints an error, copy the full message and ask me. Then commit: `git add -A && git commit -m "Phase 0 chapter 2: dw_core and process-memory experiments"`.
