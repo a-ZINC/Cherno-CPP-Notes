@@ -56,7 +56,7 @@ In Chapter 1, the leak grew `VmSize` by 1,028 kB per second while `VmRSS` grew b
 
 ### 0.5 Project Conventions (unchanged)
 
-Code lives in the note. Predict before you run. Change one variable at a time. **Shell for short glue only; benchmarking and measurement code is always C++** (this chapter's `bench_snapshot` runs under our own `run_measure`). Record the machine in `docs/environment.md`.
+Code lives in the note. Predict before you run. Change one variable at a time. **Shell for short glue only; benchmarking and measurement code is always C++.** Chapter 1's `run_measure` benchmarks an external program end-to-end (fork, exec, wait); this chapter's `bench_snapshot` times one function from inside its own process (`chrono` plus `getrusage`) — both are C++, chosen for what each is measuring. Record the machine in `docs/environment.md`.
 
 ---
 
@@ -71,9 +71,9 @@ flowchart TD
     M --> PT[Page tables: virtual to physical]
     M --> C[Counters: total size, resident pages by kind, peak]
     PT --> MMU[MMU hardware walks them on every access]
-    C --> P1["/proc/PID/status"]
-    V --> P2["/proc/PID/maps"]
-    F --> P3["/proc/PID/fd"]
+    C --> P1[/proc/PID/status]
+    V --> P2[/proc/PID/maps]
+    F --> P3[/proc/PID/fd]
 ```
 
 **How to read this diagram:**
@@ -219,9 +219,9 @@ Until now everything lived in `lab/`. This chapter's reader is used by later pha
 ```mermaid
 flowchart LR
     A[MMU: page tables and fault exceptions] --> B[Kernel: mm_struct counters, per-task usage]
-    B --> C1["/proc/self/status: text formatted on read"]
+    B --> C1[/proc/self/status: text formatted on read]
     B --> C2[getrusage syscall: binary struct]
-    B --> C3["/proc/self/maps: one line per VMA"]
+    B --> C3[/proc/self/maps: one line per VMA]
     C1 --> D[read_file: open, read until EOF, close]
     C3 --> D
     D --> E[parse with string_view and from_chars, or sscanf]
@@ -533,46 +533,101 @@ Real `/proc` reading fails in specific, predictable ways. Predict each, then try
 
 ## Step 2.9 — Measure Our Own Cost
 
-Reading `status` is not free. `lab/bench_snapshot.cpp` (Appendix A.10) calls `read_mem_snapshot` N times and reports the time per call. We measure it in C++ with our own `run_measure`, which also separates user from kernel time:
+Reading `status` is not free. `lab/bench_snapshot.cpp` (Appendix A.10) calls `read_mem_snapshot` N times and reports the time per call. This time the **timer lives inside the program itself**, so there is no separate tool to build or run:
 
-```bash
-cmake --preset rel && cmake --build --preset rel -j
-./build/rel/lab/run_measure -n 3 -- ./build/rel/lab/bench_snapshot 50000
-./build/debug/lab/bench_snapshot 50000            # the -O0 build, for comparison
-strace -c -e trace=openat,read,close,getrusage ./build/debug/lab/bench_snapshot 1000
+```cpp
+const rusage ru_before = self_usage();               // getrusage(RUSAGE_SELF): our own CPU time so far
+const auto t0 = std::chrono::steady_clock::now();    // a monotonic wall clock
+
+for (long i = 0; i < calls; ++i) {
+    if (!dw::read_mem_snapshot(s)) { /* ... */ }
+    sink += s.vm_rss_kb;                              // keeps the compiler from deleting the loop
+}
+
+const auto t1 = std::chrono::steady_clock::now();
+const rusage ru_after = self_usage();
 ```
 
-### 🔬 PREDICT
+`std::chrono::steady_clock` never jumps backward (unlike wall-clock time, which NTP can adjust), so it is the right clock for measuring a duration. `getrusage(RUSAGE_SELF)` is a single syscall that returns *our own* accumulated CPU time and fault counts, straight from the kernel's accounting: no `fork`, no external process, no parsing.
 
-1. How many system calls does **one** snapshot make, and which?
-2. Time per call at `-O2`: about 0.5 µs, 5 µs, or 50 µs? Is it mostly user time or kernel time?
-3. How much slower is the `-O0` build?
-4. At 1,000 snapshots per second, what fraction of one CPU does *just this file* cost?
-5. Does memory grow over 50,000 calls? How would `run_measure`'s output show that?
+```bash
+cmake --preset rel   && cmake --build --preset rel -j     # -O2 build
+cmake --preset debug && cmake --build --preset debug -j   # -O0 build, for comparison
+
+./build/rel/lab/bench_snapshot 50000
+./build/debug/lab/bench_snapshot 50000
+```
+
+### 🧠 THINK
+
+1. Why take `getrusage` *and* `steady_clock` readings, instead of just timing wall time?
+2. `sink += s.vm_rss_kb;` does nothing useful with the result. Why is it there?
+3. Why measure `RUSAGE_SELF` from inside the very program being measured, instead of using a wrapper program (like Chapter 1's `run_measure`) that forks, execs, and waits?
 
 <details>
 <summary>✅ Solution</summary>
 
-1. **Five**: `openat`, `read` (returns the data), `read` (returns 0: end of file), `close`, and `getrusage`. Two reads because "read until EOF" needs the second one to see the 0. With 1,000 calls, `strace -c` should show about 1,000 `openat`, 2,000 `read`, 1,000 `close`, and 1,000 `getrusage`, plus a few from process startup (verify this yourself).
-2. > **📊 Reference data (sandbox):**
-   > | Build | Per call | User / sys CPU for 50,000 calls |
-   > |-------|----------|---------------------------------|
-   > | `-O0` | **15.9 µs** | about 0.55 s / 0.2 s |
-   > | `-O2` | **5.3 µs** | about 0.06 s / 0.21 s |
+1. Wall time (`steady_clock`) tells you how long the loop *felt* from outside: it includes time the scheduler gave to **other** processes on the machine instead of us. `getrusage`'s user/sys times are what the kernel attributes specifically **to this process**, so subtracting them from wall time reveals how much of the wait was scheduling contention rather than our own work. Reporting only wall time would blame our code for noise on a busy machine.
+2. Compilers are allowed to delete a loop whose result is never used (dead-code elimination), especially at `-O2`. Accumulating into `sink` and printing it afterward forces every call to actually happen. This is the same concern as Chapter 1's `bench.cpp`.
+3. A fork-and-wait wrapper (`run_measure`) is the right tool for benchmarking **another program end-to-end**, including its process startup. Here we want the cost of **one function**, called many times, inside a process whose startup we don't care about. Reading our own `rusage` needs no extra process, no `fork`, and no `wait4`, so it is simpler and has less overhead of its own for this specific job. Chapter 1's approach and this one measure different things: an external program vs. one function.
 
-   At `-O2`, about **4 µs per call is kernel time** (formatting all 59 lines of `status`) and only about 1 µs is our parsing. The **kernel dominates**.
-3. About **3x slower** at `-O0`, entirely in user space: the parsing code is unoptimized (no inlining of `string_view` and `from_chars`). The kernel share barely changes. This repeats Chapter 1's warning that **Debug timings mislead**: benchmark with `-O2`.
-4. About 5.3 µs × 1,000 = 5.3 ms per second, roughly **0.5% of a CPU** at `-O2` (1.6% at `-O0`), for one file. Phase 1 reads four system files, and Phase 2 reads several *per process*, so this cost multiplies. That is what Phase 1's persistent-descriptor experiments and Phase 8's optimization work will address, **only where measurement justifies it**. We do not optimize now.
-5. **No.** Compare runs of different lengths under `run_measure`. If memory were growing, minor faults and peak RSS would rise with the call count.
+</details>
+
+### 🔬 PREDICT
+
+1. Time per call at `-O2`: about 0.5 µs, 5 µs, or 50 µs? Is it mostly user time or kernel time?
+2. How much slower is the `-O0` build, and where does the slowdown live (user or kernel)?
+3. At 1,000 snapshots per second, what fraction of one CPU does *just this file* cost?
+4. Does memory grow over more calls? How would this program's own output show that?
+
+<details>
+<summary>✅ Solution</summary>
+
+1. > **📊 Reference data (sandbox, `-O2`, three repeats of 50,000 calls):**
+   > | Run | Wall/call | User/call | Sys/call |
+   > |-----|-----------|-----------|----------|
+   > | 1 | 6.11 µs | 1.67 µs | 4.42 µs |
+   > | 2 | 5.95 µs | 0.62 µs | 5.32 µs |
+   > | 3 | 6.03 µs | 1.43 µs | 4.61 µs |
+
+   About **6 µs per call**, and **kernel (sys) time dominates**: roughly 4.5-5.3 µs of the 6 µs is the kernel formatting all ~40 lines of `status`, while our own parsing costs only about 1-1.7 µs. User time visibly **jitters between runs** (0.62 to 1.67 µs) while sys time stays tighter — a reminder to repeat runs rather than trust one number.
+
+2. > **📊 Reference data (`-O0`, 50,000 calls):**
+   > | Wall/call | User/call | Sys/call |
+   > |-----------|-----------|----------|
+   > | 15.19 µs | 10.78 µs | 4.38 µs |
+
+   About **2.5x slower overall**, and the slowdown is **entirely in user time** (0.62-1.67 µs at `-O2` versus 10.78 µs at `-O0`, roughly 8-17x). Kernel time barely moves (4.4-5.3 µs either way), which makes sense: the kernel's own `status`-formatting code is compiled once, in the kernel, unaffected by *our* optimization flags. Only *our* parsing (`string_view`, `from_chars`) gets slower without optimization. This repeats Chapter 1's warning that **Debug timings mislead**: benchmark with `-O2`.
+
+3. About 6 µs × 1,000 = 6 ms per second, roughly **0.6% of one CPU** at `-O2` (1.5% at `-O0`), for reading one file. Phase 1 reads four system files, and Phase 2 reads several *per process*, so this cost multiplies. That is what Phase 1's persistent-descriptor experiments and Phase 8's optimization work will address, **only where measurement justifies it**. We do not optimize now.
+
+4. **No growth observed.** The program prints `minor faults during loop`, and comparing across call counts shows it flat:
    > **📊 Reference data (`-O2` build):**
-   > | Calls | Peak RSS | Minor faults |
-   > |-------|----------|--------------|
-   > | 1,000 | 4,080 kB | 145 |
-   > | 10,000 | 3,964 kB | 145 |
-   > | 50,000 | 3,940 kB | 146 |
-   > | 200,000 | 3,964 kB | 145 |
+   > | Calls | Minor faults during the loop |
+   > |-------|-------------------------------|
+   > | 1,000 | 2 |
+   > | 10,000 | 2 |
+   > | 50,000 | 2 |
+   > | 200,000 | 2 |
 
-   Flat across a 200-fold range of call counts, and the ASan build's exit-time leak scan reported nothing. That is evidence of **no growth in these runs**, obtained with the tools this chapter built. It is not a proof for all inputs.
+   Essentially **zero faults regardless of call count**, because `read_mem_snapshot` reuses the same stack-allocated buffer and `std::string` capacity on every call rather than allocating fresh memory each time. (Compare this with Chapter 1's `bench.cpp`, which *did* allocate every round and faulted heavily.) The ASan build's exit-time leak scan also reported nothing. That is evidence of **no growth in these runs**, obtained with the tool this chapter built. It is not a proof for all inputs.
+
+</details>
+
+### ⚠️ A caveat: this note cannot confirm the syscall count
+
+An earlier draft of this chapter predicted `openat`, two `read`s, `close`, and `getrusage` per snapshot, verified with `strace -c`. `strace` was not available while re-testing this version, so that specific claim is **unverified here** — check it yourself:
+
+```bash
+strace -c -e trace=openat,read,close,getrusage ./build/debug/lab/bench_snapshot 1000
+```
+
+**PREDICT before running:** how many of each syscall do you expect for 1,000 calls, and why two `read`s per call rather than one?
+
+<details>
+<summary>✅ Reasoning (not yet re-verified against real strace output)</summary>
+
+`dw::read_file` (Chapter 2, Step 2.4) loops until `read()` returns **0** (end of file), because a single `read()` is allowed to return fewer bytes than the whole file. For a ~1.4 KB file that usually means one `read()` returning the data, and a second `read()` returning 0. So the expected pattern per call is one `openat`, two `read`s, one `close`, and one `getrusage` — for 1,000 calls: about 1,000 `openat`, 2,000 `read`, 1,000 `close`, 1,000 `getrusage`, plus a handful from process startup. Confirm this on your machine and tell me if it differs.
 
 </details>
 
@@ -1207,17 +1262,36 @@ int main() {
 ```
 
 ### A.10 `lab/bench_snapshot.cpp`
-
-**New.** Step 2.9: cost of one snapshot.
-
+**New.** Step 2.9: cost of one snapshot, timed with `std::chrono` and `getrusage` from inside the same process (no external benchmarking tool needed).
 ```cpp
-// How much does ONE memory snapshot cost? Times N calls of dw::read_mem_snapshot.
+// How much does ONE memory snapshot cost? Self-contained: no external timing
+// tool needed. Times N calls of dw::read_mem_snapshot with a plain monotonic
+// clock, and separately asks the kernel for OUR OWN user/sys CPU time via
+// getrusage (before/after), so we split wall time into "our CPU" and
+// "everything else" (scheduling delay, other processes) without forking.
+//
 // Usage: bench_snapshot [calls=20000]
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <sys/resource.h>
 
 #include "dw/proc_self.hpp"
+
+namespace {
+
+// Seconds from a timeval, as a double.
+double to_seconds(const timeval& tv) {
+    return static_cast<double>(tv.tv_sec) + static_cast<double>(tv.tv_usec) / 1e6;
+}
+
+rusage self_usage() {
+    rusage ru{};
+    ::getrusage(RUSAGE_SELF, &ru);   // one syscall; asks the KERNEL for our own accounting
+    return ru;
+}
+
+}  // namespace
 
 int main(int argc, char** argv) {
     const long calls = (argc > 1) ? std::atol(argv[1]) : 20000;
@@ -1227,13 +1301,17 @@ int main(int argc, char** argv) {
     }
 
     dw::MemSnapshot s;
-    if (!dw::read_mem_snapshot(s)) {  // warm-up, also proves the interface works
+    if (!dw::read_mem_snapshot(s)) {  // warm-up call: also proves the interface works
         std::fprintf(stderr, "cannot read /proc/self/status\n");
         return 1;
     }
 
-    long sink = 0;  // keeps the result observable
+    long sink = 0;  // keeps the loop's result observable, so it cannot be optimized away
+
+    // --- the timer: wall clock via chrono, CPU time via getrusage ---
+    const rusage ru_before = self_usage();
     const auto t0 = std::chrono::steady_clock::now();
+
     for (long i = 0; i < calls; ++i) {
         if (!dw::read_mem_snapshot(s)) {
             std::fprintf(stderr, "read failed at call %ld\n", i);
@@ -1241,11 +1319,22 @@ int main(int argc, char** argv) {
         }
         sink += s.vm_rss_kb;
     }
-    const auto t1 = std::chrono::steady_clock::now();
 
-    const double total_s = std::chrono::duration<double>(t1 - t0).count();
-    std::printf("calls=%ld  total=%.3f s  per call=%.2f us  (sink=%ld)\n", calls, total_s,
-                total_s / static_cast<double>(calls) * 1e6, sink);
+    const auto t1 = std::chrono::steady_clock::now();
+    const rusage ru_after = self_usage();
+    // --- end timer ---
+
+    const double wall_s = std::chrono::duration<double>(t1 - t0).count();
+    const double user_s = to_seconds(ru_after.ru_utime) - to_seconds(ru_before.ru_utime);
+    const double sys_s = to_seconds(ru_after.ru_stime) - to_seconds(ru_before.ru_stime);
+    const long minflt = ru_after.ru_minflt - ru_before.ru_minflt;
+
+    std::printf("calls=%ld\n", calls);
+    std::printf("wall total = %.4f s   (%.2f us/call)\n", wall_s, wall_s / static_cast<double>(calls) * 1e6);
+    std::printf("user total = %.4f s   (%.2f us/call)\n", user_s, user_s / static_cast<double>(calls) * 1e6);
+    std::printf("sys  total = %.4f s   (%.2f us/call)\n", sys_s, sys_s / static_cast<double>(calls) * 1e6);
+    std::printf("minor faults during loop = %ld\n", minflt);
+    std::printf("(sink=%ld, ignore: keeps the compiler from deleting the loop)\n", sink);
     return 0;
 }
 ```
