@@ -29,6 +29,28 @@ Pure round-robin treats every thread as equally important, providing no way to e
 ### ✅ The Better Solution
 Track *actual accumulated CPU time received*, weighted by priority, as a single running number per thread — and always schedule whoever's number is lowest. This adapts automatically: a thread that blocks often naturally accumulates time slowly and gets prioritized when it does become ready again; threads correctly receive CPU proportional to their priority weight over any sufficiently long window, without needing separate bookkeeping for "how long has it been since this thread ran."
 
+### 1. Performance Metrics (`utime`, `stime`, and `minflt`)
+
+When benchmarking via `getrusage`, execution time breaks down into two core active components:
+
+* **`utime` (User CPU Time):** Active CPU time spent executing your application's user-space C++ instructions (e.g., loops, string manipulation, parsing logic).
+* **`stime` (System / Kernel CPU Time):** Active CPU time spent executing code *inside the operating system kernel* on behalf of your process (e.g., executing system calls like `openat`, `read`, or managing memory maps).
+* **The Role of Blocking Time:** Neither `utime` nor `stime` measures waiting or blocking periods (such as I/O waits or sleep states). The full wall-clock duration accounts for all three:
+
+$$\text{Wall-Clock Time} = \text{User CPU Time } (utime) + \text{System CPU Time } (stime) + \text{Blocked/Waiting Time}$$
+
+
+
+---
+
+### 2. OS Scheduling & Sleeper Fairness
+
+The Linux Completely Fair Scheduler (CFS) tracks active thread execution using **`vruntime`** (virtual runtime), which combines both user and kernel CPU consumption (`utime + stime`).
+
+* **CPU-Bound Programs:** Burn through continuous time slices. Their `vruntime` climbs steadily, resulting in standard preemption to share the core.
+* **I/O or System-Call Bound Programs:** Frequently block and go to sleep. While sleeping, their `vruntime` remains frozen while other tasks run.
+* **Sleeper Fairness Boost:** When a blocked thread wakes up, its `vruntime` is lower than active CPU-bound threads. The kernel automatically compensates by granting an immediate priority boost, ensuring I/O and system-heavy workloads resume execution without lag.
+
 ### 🧠 Core Concept
 > **CFS gives every runnable thread a `vruntime` (virtual runtime) — accumulated CPU time received, weighted by priority — and its scheduling rule is almost embarrassingly simple: always run the READY thread with the LOWEST vruntime.** This single rule, applied continuously, produces long-run fairness without needing fixed time slices or explicit round-robin bookkeeping.
 
