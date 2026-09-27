@@ -43,6 +43,40 @@ flowchart TD
     E --> F["scheduler resumes us<br/>(Ch 4.4) -- copy_to_user(),<br/>read() finally returns"]
 ```
 
+### 🔌 Syscalls / APIs — Syntax First
+
+Before the project code, here is exactly what each call means, argument by argument — read this section BEFORE the code below, not after.
+
+```c
+int open(const char *pathname, int flags, ... /* mode_t mode */);
+```
+- **pathname** — the file path, absolute or relative to the process's current working directory.
+- **flags** — a bitwise-OR'd set of constants that controls how the file is opened. The three you MUST pick exactly one of:
+  - `O_RDONLY` — open for reading only (what this chapter's reader uses).
+  - `O_WRONLY` — open for writing only.
+  - `O_RDWR` — open for both.
+
+  Additional flags you OR in on top of one of the three above:
+  - `O_CREAT` — create the file if it doesn't exist (requires the third `mode` argument, e.g. `0644`, the Unix permission bits for the new file).
+  - `O_TRUNC` — if the file exists, truncate it to zero length on open (common with `O_WRONLY`).
+  - `O_APPEND` — every write() atomically seeks to the end of the file first — this is what makes multiple processes safely append to a shared log file without corrupting each other's writes.
+  - `O_NONBLOCK` — return immediately instead of blocking if the open itself would block (relevant for FIFOs/devices; largely irrelevant for regular files) — this is Part 5's flag, previewed here because it's the same `open()` call.
+- **Return value** — a new file descriptor (Chapter 3.1) on success, or `-1` with `errno` set on failure (e.g., `ENOENT` if the path doesn't exist and `O_CREAT` wasn't given).
+
+```c
+ssize_t read(int fd, void *buf, size_t count);
+ssize_t write(int fd, const void *buf, size_t count);
+```
+- **fd** — the file descriptor from `open()`.
+- **buf** — a pointer to a buffer YOU own and allocated — the kernel copies bytes into it (`read`) or out of it (`write`); it never allocates this buffer for you.
+- **count** — the MAXIMUM number of bytes to transfer, not a guarantee — both calls may transfer FEWER bytes than requested (a "short read/write") even without an error; this is why the project code below loops.
+- **Return value** — the number of bytes actually transferred (`0` from `read()` means end-of-file — not an error), or `-1` with `errno` set on failure.
+
+```c
+int close(int fd);
+```
+- Releases this process's fd table entry (Chapter 3.2) and decrements the underlying `struct file`'s reference count (Chapter 3.10) — the file is only truly closed once every fd pointing to it, in every process, has been closed.
+
 **Project: a blocking file reader, timing cache-cold vs. cache-warm reads.**
 
 ```cpp
