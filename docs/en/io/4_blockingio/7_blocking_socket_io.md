@@ -67,7 +67,7 @@ int socket(int domain, int type, int protocol);
 |---|---|---|
 | `AF_INET` | IPv4 | The overwhelming default for internet/LAN servers |
 | `AF_INET6` | IPv6 | Modern dual-stack servers; can also accept IPv4 via mapped addresses |
-| `AF_UNIX` (= `AF_LOCAL`) | Local machine only, addressed by a filesystem path | IPC between processes on the SAME machine — no network stack at all, faster than loopback TCP (Chapter 4.9's isolation discussion, Section 9 below) |
+| `AF_UNIX` (= `AF_LOCAL`) | Local machine only, addressed by a filesystem path | IPC between processes on the SAME machine — no network stack at all, faster than loopback TCP (Chapter 4.9's isolation discussion, Section 10 below) |
 
 **`type`** — the communication style:
 
@@ -237,9 +237,94 @@ Behave like `read()`/`write()` (Chapter 4.6) with an extra `flags` argument — 
 | `MSG_DONTWAIT` | Make just THIS ONE call nonblocking, without changing the socket's overall mode — a lightweight preview of Part 5's `O_NONBLOCK` |
 | `MSG_WAITALL` (recv only) | Don't return until the FULL requested length has arrived (or error/EOF) — disables "short read" for this one call |
 | `MSG_PEEK` (recv only) | Look at incoming data WITHOUT removing it from the receive buffer — a later `recv()` sees the same bytes again |
-| `MSG_NOSIGNAL` (send only, Linux) | Suppress `SIGPIPE` (Section 11) on send-to-a-closed-peer; get `EPIPE` instead |
+| `MSG_NOSIGNAL` (send only, Linux) | Suppress `SIGPIPE` (Section 12) on send-to-a-closed-peer; get `EPIPE` instead |
 
-### 8. Client-side: `connect()`, and a complete matching client program
+### 8. Project: the complete single-threaded blocking TCP echo server
+
+Everything in Sections 1-7 was building toward this one program. It uses every call just explained, in the exact order of the sequence diagram above, and is the literal object every later Part 4/5 chapter keeps rebuilding.
+
+```cpp
+// blocking_echo_server.cpp
+// Compile: g++ -O2 -std=c++20 blocking_echo_server.cpp -o blocking_echo_server
+// Run:     ./blocking_echo_server 9000
+
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>   // TCP_NODELAY
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <cstdio>
+#include <cstring>
+#include <cstdlib>
+#include <csignal>
+
+int main(int argc, char** argv) {
+    if (argc < 2) { fprintf(stderr, "usage: %s <port>\n", argv[0]); return 1; }
+    uint16_t port = (uint16_t)atoi(argv[1]);
+
+    signal(SIGPIPE, SIG_IGN);   // Section 11: don't die if a client vanishes mid-send()
+
+    // --- socket(): Section 2 ---
+    int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (listen_fd < 0) { perror("socket"); return 1; }
+
+    // --- setsockopt(): Section 7's table ---
+    int yes = 1;
+    setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+
+    // --- bind(): Section 3's sockaddr_in + Section 4's htons() + Section 5's INADDR_ANY ---
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);   // listen on every local interface
+    if (bind(listen_fd, (sockaddr*)&addr, sizeof(addr)) < 0) {
+        perror("bind");   // EADDRINUSE is the common one here (Section 7)
+        return 1;
+    }
+
+    // --- listen(): Section 7 ---
+    const int BACKLOG = 16;
+    if (listen(listen_fd, BACKLOG) < 0) { perror("listen"); return 1; }
+    printf("Listening on port %d (one client at a time -- try connecting twice!)\n", port);
+
+    while (true) {
+        // --- accept(): BLOCKS here until a client connects (Ch 4.2's mechanism) ---
+        sockaddr_in client_addr{};
+        socklen_t client_len = sizeof(client_addr);
+        int client_fd = accept(listen_fd, (sockaddr*)&client_addr, &client_len);
+        if (client_fd < 0) { perror("accept"); continue; }
+
+        char ip_str[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &client_addr.sin_addr, ip_str, sizeof(ip_str));  // Section 5
+        printf("Client connected: %s:%d\n", ip_str, ntohs(client_addr.sin_port));
+
+        // --- echo loop: recv() BLOCKS for data, send() echoes it straight back ---
+        char buf[4096];
+        while (true) {
+            ssize_t n = recv(client_fd, buf, sizeof(buf), 0);
+            if (n < 0) { perror("recv"); break; }
+            if (n == 0) { printf("Client disconnected (clean close)\n"); break; }  // not an error!
+
+            ssize_t sent_total = 0;
+            while (sent_total < n) {
+                ssize_t s = send(client_fd, buf + sent_total, n - sent_total, 0);
+                if (s < 0) { perror("send"); goto next_client; }
+                sent_total += s;
+            }
+        }
+        next_client:
+        close(client_fd);   // release THIS connection; listen_fd keeps listening (Section 7)
+    }
+    return 0;
+}
+```
+
+**Predict before running:** start the server, then open TWO terminals and run `nc 127.0.0.1 9000` in each, roughly at the same time. What happens to the second `nc`?
+<details><summary>Click to reveal the answer</summary>
+The second `nc` connects at the TCP/kernel level instantly — the handshake completes and the connection sits in the listening socket's accept queue (Section 7's `backlog`) — but the SERVER's `accept()` call doesn't return a second time until it finishes serving the first client entirely (its inner echo loop only exits when that client disconnects). The second client can type, but gets no echo back until the first one hangs up. This is the exact limitation Chapters 4.8-4.9 fix.
+</details>
+
+### 9. Client-side: `connect()`, and a complete matching client program
 
 Everything above was server-side. The client side is actually SIMPLER — no `bind()`/`listen()`/`accept()` needed (the kernel auto-assigns a local port via an implicit bind inside `connect()`):
 
@@ -251,7 +336,7 @@ Initiates the TCP three-way handshake (SYN → SYN-ACK → ACK, full detail in P
 - `ETIMEDOUT` — no response at all within the OS's connection timeout (firewall silently dropping packets, or the host is unreachable).
 - `ENETUNREACH` / `EHOSTUNREACH` — routing-level failure, no path to that network/host at all.
 
-**Project: a complete, matching TCP client** (test the server below with this instead of `nc`, to see explicit error handling):
+**Project: a complete, matching TCP client** (test the server above with this instead of `nc`, to see explicit error handling):
 
 ```cpp
 // blocking_echo_client.cpp
@@ -308,4 +393,93 @@ int main(int argc, char** argv) {
 
 **Predict before running:** what happens if you run this client WITHOUT starting the server first?
 <details><summary>Click to reveal the answer</summary>
-`connect()` returns `-1` immediately (or after a short delay) with `errno == ECONNREFUSED`, because the OS on the target machine actively rejects the connection attempt (a TCP RST packet) when nothing is listening on that port — you do NOT get a generic "timeout," which only happens when there's no response at all (a firewall silently d
+`connect()` returns `-1` immediately (or after a short delay) with `errno == ECONNREFUSED`, because the OS on the target machine actively rejects the connection attempt (a TCP RST packet) when nothing is listening on that port — you do NOT get a generic "timeout," which only happens when there's no response at all (a firewall silently dropping packets, or an unreachable host).
+</details>
+
+### 10. Unix domain sockets — the local-only alternative, in brief
+
+```cpp
+int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+sockaddr_un addr{};
+addr.sun_family = AF_UNIX;
+strncpy(addr.sun_path, "/tmp/my_service.sock", sizeof(addr.sun_path) - 1);
+bind(fd, (sockaddr*)&addr, sizeof(addr));
+// listen()/accept()/recv()/send() all work IDENTICALLY from here --
+// same file_operations dispatch pattern (Ch 3.4), different transport underneath
+```
+No network stack, no IP, no port numbers, no TCP handshake — just a named endpoint in the filesystem, restricted to processes on this one machine. Faster than looping traffic through the TCP/IP stack over `127.0.0.1`, and access can be controlled with ordinary filesystem permissions on the socket path. Common in local IPC: database client libraries (`postgres`, `mysql`), container runtimes (`docker.sock`), and this course's own Chapter 3.7-3.8 territory made concrete.
+
+### 11. `close()` vs. `shutdown()`, and TCP's `TIME_WAIT`
+
+```c
+int close(int fd);
+int shutdown(int fd, int how);   // how = SHUT_RD, SHUT_WR, or SHUT_RDWR
+```
+`close()` releases YOUR fd (Chapter 3.10's refcounting) — if other fds (from `dup()`/`fork()`) still reference the same underlying connection, it stays open for them. `shutdown()` is more surgical: it can close just the WRITE half (`SHUT_WR`, telling the peer "I'm done sending, but I'll still read your replies" — useful for a clean half-duplex wind-down) or just the READ half, independent of any fd-sharing concerns, and independent of `close()`.
+
+After a connection closes, the side that initiated the close typically lingers briefly in a `TIME_WAIT` state (commonly tens of seconds) before the OS fully releases that port — this is why quickly-restarted servers can hit `EADDRINUSE` on `bind()`, and exactly why `SO_REUSEADDR` (Section 7's table) exists. Part 9 covers the full TCP state machine and why `TIME_WAIT` specifically must exist (to catch and discard any old, delayed packets from the just-closed connection before that port number is reused).
+
+### 12. `SIGPIPE` — the signal that surprises almost everyone once
+
+If you `send()` to a connection whose peer has already closed their end, the default behavior is for your process to receive a `SIGPIPE` signal — whose DEFAULT action is to terminate your process immediately, with no error return from `send()` at all. This surprises nearly every socket programmer exactly once. Two fixes:
+- Pass `MSG_NOSIGNAL` to `send()` (Linux-specific, Section 7's flag table) — get a normal `EPIPE` error return instead.
+- Or, globally, `signal(SIGPIPE, SIG_IGN)` once at program startup (same `SIG_IGN` pattern as Chapter 4.9's `SIGCHLD` handling) — every `send()` in the whole process now fails with `EPIPE` instead of killing you.
+
+### 13. UDP in one paragraph, for contrast (full depth: Part 9)
+
+`socket(AF_INET, SOCK_DGRAM, 0)` gives you a CONNECTIONLESS socket — no `listen()`/`accept()`, no handshake; you `sendto(fd, data, len, 0, &dest_addr, addrlen)` a self-contained message directly to a destination, and `recvfrom(fd, buf, len, 0, &src_addr, &addrlen)` to receive one along with WHO sent it. No delivery guarantee, no ordering guarantee, no automatic retransmission — the application must handle loss/reordering itself if it cares. Used where low latency matters more than reliability (DNS queries, live video/audio, game state updates) — Part 9 covers the real trade-offs.
+
+### 14. Quick debugging toolkit (so you can SEE what your code is doing)
+
+```bash
+ss -tlnp            # list all listening TCP sockets, with the owning process
+netstat -tlnp       # older equivalent of the above
+nc 127.0.0.1 9000    # a generic TCP client, for quick manual testing
+telnet 127.0.0.1 9000  # similar, older tool
+strace -e trace=network ./your_server   # see every socket syscall your program makes, live
+```
+
+---
+
+### ❌ Common Misconceptions
+- ❌ **"accept() and recv() block for the same reason."** — They block on different wait queues for different events: `accept()` waits for a new completed TCP handshake; `recv()` waits for data (or closure) on an already-established connection.
+- ❌ **"send() never blocks."** — It usually returns fast because the kernel buffers the data, but if that buffer is full (a slow or stalled receiver, Chapter 3.8's backpressure), `send()` blocks too, using the identical mechanism.
+- ❌ **"A successful send() means the client received the data."** — It only means the KERNEL accepted the bytes into its own send buffer (Chapter 3.8) — actual delivery and receipt are separate, unconfirmed events at this layer.
+- ❌ **"recv() returning 0 is an error."** — It's the normal, correct signal that the peer has cleanly closed their side of the connection — a negative return value (checked via `errno`) is the actual error case.
+- ❌ **"close() always fully terminates a connection immediately."** — If other fds (from fork()/dup()) reference the same connection, it stays open until ALL of them close it (Chapter 3.10); also, TCP's own `TIME_WAIT` linger (Section 11) can outlive your `close()` call at the OS level.
+- ❌ **"A send() failure due to SIGPIPE returns an error you can check."** — By default it doesn't return at all — it terminates your process via a signal, unless you've disabled that behavior (Section 12).
+- ❌ **"This server is 'wrong' because it only handles one client at a time."** — It's CORRECT for its stated scope; Chapter 4.1's principle applies directly — the "problem" only exists once you need real concurrency, which Chapters 4.8-4.9 address head-on.
+
+### 🧙 Wizard Insight
+This exact server — `accept()`, then a blocking `recv()`/`send()` loop, then `close()`, then loop — is the literal ancestor of every network server architecture covered for the rest of this course. Every later mechanism (threads, `select`, `epoll`, `io_uring`) is answering exactly one question about THIS code: "how do I stop the second client from waiting behind the first one?" Internalizing this server completely, including exactly where and why each call blocks, is what makes every subsequent chapter's added complexity feel motivated rather than arbitrary.
+
+### 🧠 Quiz
+**Q1.** What specific event does a blocking accept() wait for, versus what a blocking recv() waits for?
+<details><summary>Answer</summary>accept() waits for a new, fully-completed incoming TCP connection to appear in the listening socket's accept queue; recv() waits for data to arrive (or the peer to close) on an already-established, specific connected socket.</details>
+
+**Q2.** Why must you call htons() on a port number before putting it in a sockaddr_in, even on a little-endian machine?
+<details><summary>Answer</summary>Because network protocols standardize on big-endian byte order regardless of any given machine's native order; htons() is defined to always produce the correct network-order value, so calling it unconditionally (rather than only "when needed") is what makes the code portable and correct on every architecture.</details>
+
+**Q3.** Your send() call succeeds and returns the full byte count. Does this guarantee the peer application has read the data?
+<details><summary>Answer</summary>No -- it only guarantees the kernel accepted the bytes into its own send buffer on your machine; the data may still be in flight, sitting in the peer's kernel receive buffer unread, or (rarely) lost and awaiting TCP retransmission -- actual application-level receipt is never confirmed at the send() layer.</details>
+
+**Q4.** Why does connect() sometimes fail instantly with ECONNREFUSED but other times take much longer to fail with ETIMEDOUT?
+<details><summary>Answer</summary>ECONNREFUSED means the target machine actively responded with a TCP RST because nothing is listening on that port -- a fast, definite answer. ETIMEDOUT means no response was received at all within the OS's timeout window, typically because a firewall is silently dropping packets or the host is unreachable -- there's no RST to short-circuit the wait.</details>
+
+### 📌 Short Notes (Quick Reference)
+- accept()/recv()/send() block using the IDENTICAL Ch 4.2 mechanism as file I/O — only the specific wait queue and wakeup trigger differ.
+- socket(domain, type, protocol): AF_INET/AF_INET6/AF_UNIX × SOCK_STREAM/SOCK_DGRAM; protocol is almost always 0.
+- Address structs: fill the specific one (sockaddr_in, sockaddr_un...), cast to `sockaddr*` when calling — sa_family tells the kernel which concrete layout follows.
+- Always htons()/htonl() multi-byte values going into a sockaddr — network byte order is big-endian, always, regardless of your CPU.
+- Server sequence: socket → setsockopt(SO_REUSEADDR) → bind → listen(backlog) → accept (loop) → recv/send → close.
+- Client sequence: socket → connect → send/recv → close. connect() itself blocks through the TCP handshake.
+- recv()==0 is clean peer closure (normal); negative = real error (check errno). A successful send() only confirms kernel acceptance, never peer receipt.
+- SIGPIPE kills your process by default on send-to-closed-peer — use MSG_NOSIGNAL or `signal(SIGPIPE, SIG_IGN)`.
+- TIME_WAIT after close() is why SO_REUSEADDR exists for quickly-restarted servers.
+- Unix domain sockets (AF_UNIX) = same API, no network stack, local-machine-only, addressed by a filesystem path.
+- Debug with `ss -tlnp`, `nc`, and `strace -e trace=network`.
+
+### 🔗 What This Connects To Next
+**Previous:** Part 4, Chapter 4.6 — Blocking File I/O
+**Current:** Part 4, Chapter 4.7 — Blocking Socket I/O
+**Next:** Part 4, Chapter 4.8 — Thread-per-Connection (the first REAL fix for the "second client waits behind the first" problem just demonstrated)
