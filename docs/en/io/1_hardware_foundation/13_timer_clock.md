@@ -238,6 +238,36 @@ Time is a **device** like any other: it has registers (readable counter), an int
 **Q4.** Which clock should a connection timeout use, and why?
 <details><summary>Answer</summary>`CLOCK_MONOTONIC` — it never jumps backward or forward when the wall clock is adjusted, so a timeout can't be accidentally shortened or lengthened.</details>
 
+System Timers & Timekeeping: Comprehensive Notes
+1. The Core Principle
+A CPU is a high-speed calculator with no innate sense of duration or speed. Timekeeping cannot exist in abstract software alone; it relies entirely on physical hardware oscillating and counting real-world electrical pulses. Software's job is simply to organize, multiply, and manage what the physical hardware provides.
+2. The Two Halves of Timekeeping
+The kernel separates time services into two distinct hardware mechanisms:
+ * Clocksource (The Wall Clock / Stopwatch):
+   * Purpose: To read the current time or elapsed cycles at any moment.
+   * Hardware: The TSC (Time Stamp Counter) on x86 CPUs, which tracks CPU reference cycles.
+   * Optimization: Accessed via vDSO, meaning reading the clock takes tens of nanoseconds without triggering a slow transition into the kernel.
+ * Clockevent (The Alarm Clock):
+   * Purpose: To program a future deadline that interrupts the CPU when it expires.
+   * Hardware: The per-core Local APIC timer.
+3. Hardware vs. Software Division of Labor
+The physical hardware can only track one single deadline per core at a time, but the operating system needs to handle thousands of concurrent timers (sleeping threads, network timeouts, delayed tasks).
+ * In Software (RAM): The kernel maintains a master sorted list (such as a red-black tree or timer wheel) of every active timeout across the system.
+ * In Hardware (CPU Registers): The kernel looks at that master list, picks the very next upcoming deadline, and loads it into the physical Local APIC hardware register. When that hardware alarm rings, the kernel services it and reprograms the register for the next deadline on the list.
+4. Surviving Power-Off: The RTC
+When a computer is shut down, the CPU, TSC, and Local APIC lose power and reset to zero.
+ * The RTC (Real-Time Clock): A dedicated, low-power hardware chip on the motherboard.
+ * The CMOS Battery: A small coin-cell battery that supplies continuous power exclusively to the RTC.
+ * At Boot: The BIOS/UEFI reads the current wall-clock date and time from the battery-powered RTC, and hands it off to the Linux kernel to initialize CLOCK_REALTIME.
+5. Modern Optimizations & Real-World Realities
+ * Tickless Idle (NO_HZ_IDLE): Historically, kernels fired a rigid periodic timer interrupt (e.g., 250 Hz) constantly. Modern kernels stop the tick on idle CPUs, reducing hardware interruptions to near zero when a core has no work, saving power and avoiding unnecessary wakeups.
+ * Why usleep(N) Overshoots: Asking a thread to sleep for a specific duration will always take slightly longer due to three stacked factors:
+   * Timer Slack: A kernel mechanism (default 50 µs) that intentionally delays timers slightly to batch them together into a single interrupt, saving CPU cycles.
+   * Wakeup Latency: The time it takes for the awakened thread to be placed on a run queue and context-switched back onto a CPU.
+   * Hypervisor Scheduling: Additional jitter if running inside a virtual machine.
+ * Clock Selection: Always use CLOCK_MONOTONIC for durations, timeouts, and performance benchmarks because it never jumps backward or forward, unlike CLOCK_REALTIME (which can be adjusted by NTP or system administrators).
+
+
 ### 📌 Short Notes (Quick Reference)
 - Time = a counter you **read** (clocksource: TSC) + a countdown that **interrupts** (clockevent: local APIC timer, `LOC` in `/proc/interrupts`).
 - Legacy ports still present: PIT `0x40–0x43`, RTC `0x70–0x71`.
