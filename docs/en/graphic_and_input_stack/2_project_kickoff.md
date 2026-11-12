@@ -112,7 +112,7 @@ sequenceDiagram
     VT->>L: start
     L->>K: become DRM master, set mode, grab keyboard
     Note over L,K: the screen now shows Lumen; keys go to Lumen
-    L--xL: bug: infinite loop / crash with the keyboard still grabbed
+    L--)L: bug: infinite loop / crash with keyboard still grabbed
     You->>SSH: ssh lumen-vm "sudo pkill -9 lumen"
     SSH->>K: process killed → kernel drops master, frees keyboard
     K-->>VT: text console comes back
