@@ -1,250 +1,267 @@
-# Chapter 1 — What Is a Picture on a Computer?
+# Chapter 2 — Your Workbench and Your First Window
 
-> ⏱️ 15 minutes · Part 0: Start · ⭐ core
+> ⏱️ 20 minutes · Part 0: Start · ⭐ core · 🎮 interactive
 
 ---
 
 ## 🎯 Today's goal
 
-By the end you will know that **a picture is just a grid of numbers**, and you will make a picture file **by typing the numbers yourself**.
+1. Install the tools you'll use for the whole course.
+2. Show **your own pixels in a real window**, live, instead of in a file.
 
-This is the picture you'll make. It is only 4 × 3 dots, shown here very big:
+This is the result (a real screenshot, explained below):
 
-![a 4 by 3 picture: red, green, blue, white / yellow, cyan, magenta, black / grey, orange, sky blue, light grey](images/ch01_tiny_zoomed.png)
+![our gradient shown in a 400x300 window](images/ch02_first_window.png)
 
 ---
 
 ## 🧒 The idea in plain words
 
-Think of a **mosaic**: a wall picture made of small coloured tiles. Each tile has **one** colour. From far away you don't see tiles, you see a picture.
+In Chapter 1 you painted a picture into a **file**. Now we paint it into a **window**.
 
-A computer picture is a mosaic too:
-- each tile is called a **pixel** (`pixel` = "picture element", one coloured dot);
-- the tiles sit in a **grid** of rows and columns;
-- the colour of each tile is stored as **numbers**.
+Think of an **art gallery**:
+- **you** paint the canvas (you choose every pixel's colour, exactly like Chapter 1);
+- the **gallery staff** hang it on the wall, next to other paintings (that's your desktop: it decides where windows go and shows them on the screen);
+- a **helper** carries your canvas to the staff and speaks their language for you. That helper is a library called **SDL2**.
 
 ```mermaid
 flowchart LR
-  A["🖼️ A picture"] --> B["🔲 A grid of dots<br/>(pixels)"] --> C["🔢 Each dot = 3 numbers<br/>red, green, blue"] --> D["💾 A file =<br/>a size + all the numbers"]
+  A["🎨 Your code<br/>fills a list of pixels<br/>(Chapter 1)"] --> B["🤝 SDL2<br/>carries the pixels"] --> C["🪟 Your desktop<br/>(GNOME, KDE…)<br/>puts the window on screen"] --> D["🖥️ Screen"]
 ```
 
-So **"a picture"** = **"how wide, how tall, and a long list of numbers"**. That's all. Everything else in this course builds on this one idea.
+> 💡 **Why a helper?** Talking to a Linux desktop directly takes a few hundred lines. For now we want to learn **drawing**, so SDL does the talking.
+> In Parts 5–7 you'll remove SDL and do every step yourself. By then, each step will be easy.
 
 ---
 
 ## 🔍 How it works
 
-**1. The grid.** A picture has a `width` (dots per row) and a `height` (number of rows). Our tiny picture is 4 wide and 3 tall = **12 pixels**.
-We number columns with **x** (from the left, starting at 0) and rows with **y** (from the **top**, starting at 0).
+### 1. Your workbench (install once)
+
+Open a terminal on your Linux PC (Ubuntu 24.04 shown) and run:
+
+```bash
+sudo apt install build-essential cmake ninja-build git libsdl2-dev imagemagick
+```
+
+| Tool | What it is, in one line |
+|---|---|
+| `build-essential` | the C++ compiler (`g++`) and friends |
+| `cmake` | a **recipe tool**: you write down "my program is these files + these libraries", and it works out the compile commands |
+| `ninja-build` | a fast worker that runs those compile commands |
+| `git` | saves snapshots of your code, so you can always go back |
+| `libsdl2-dev` | the SDL2 helper library (the `-dev` part = the files a programmer needs) |
+| `imagemagick` | handy picture tools (`convert`, `display`) |
+
+> No Linux PC? A Linux VM (VirtualBox, VMware, UTM on a Mac) with Ubuntu Desktop works for the whole first half of the course.
+
+### 2. Three things SDL gives you
+
+| SDL thing | Gallery picture | What it does |
+|---|---|---|
+| `SDL_Window` | the **frame** on the wall | a rectangle on your desktop with a title |
+| `SDL_Renderer` | the **staff member** who hangs pictures | puts pictures into the window |
+| `SDL_Texture` | the **canvas** you hand over | a picture the renderer can show. We copy our pixel numbers into it |
+
+### 3. Showing a picture = 3 calls
 
 ```mermaid
-flowchart TB
-  subgraph G["4 × 3 picture   (x → , y ↓)"]
-    direction TB
-    subgraph R0["row y=0"]
-      direction LR
-      a["(0,0)<br/>red"] --- b["(1,0)<br/>green"] --- c["(2,0)<br/>blue"] --- d["(3,0)<br/>white"]
-    end
-    subgraph R1["row y=1"]
-      direction LR
-      e["(0,1)<br/>yellow"] --- f["(1,1)<br/>cyan"] --- g["(2,1)<br/>magenta"] --- h["(3,1)<br/>black"]
-    end
-    subgraph R2["row y=2"]
-      direction LR
-      i["(0,2)<br/>grey"] --- j["(1,2)<br/>orange"] --- k["(2,2)<br/>sky blue"] --- l["(3,2)<br/>light grey"]
-    end
-  end
+flowchart LR
+  P["our pixels<br/>(std::vector)"] -- "SDL_UpdateTexture<br/>copy the numbers in" --> T["texture"]
+  T -- "SDL_RenderCopy<br/>place it in the window" --> R["renderer's<br/>hidden picture"]
+  R -- "SDL_RenderPresent<br/>show it now" --> W["🪟 window"]
 ```
 
-> ⚠️ On screens, **y grows downwards**. (0,0) is the **top-left** corner, not the bottom-left like in school maths.
+Why "hidden picture" and then "present"? The renderer first builds the picture **out of sight**, then shows it all at once. You never see a half-drawn picture. (Chapter 15 is all about this trick.)
 
-**2. A colour is 3 numbers.** Every pixel stores how much **red**, **green** and **blue** light to make (`RGB`). Each number goes from **0** (off) to **255** (full).
-Why 255? One `byte` (= 8 bits, the smallest box of memory) holds 256 different values: 0 to 255.
+### 4. Telling SDL how our bytes are laid out
 
-| Colour | Red | Green | Blue |
-|---|---|---|---|
-| red | 255 | 0 | 0 |
-| yellow (red + green light) | 255 | 255 | 0 |
-| white (all full) | 255 | 255 | 255 |
-| black (all off) | 0 | 0 | 0 |
-| grey (all half) | 128 | 128 | 128 |
+`SDL_UpdateTexture` needs two facts about our list of numbers:
+- the **format**: `SDL_PIXELFORMAT_RGB24` = "3 bytes per pixel: R, G, B", exactly like Chapter 1;
+- the **bytes per row**: `width * 3`. That's how SDL finds where each new row starts.
 
-Chapter 3 explains *why* red + green light gives yellow. For now, trust the table.
+Remember that second number. In ▶️ *Try it* you'll see what happens when it's wrong.
 
-**3. The numbers go in a row-by-row list.** Memory and files are **one long line** of bytes, not a grid. So we write row 0 first (left to right), then row 1, then row 2. 12 pixels × 3 numbers = **36 numbers**.
+### 5. Waiting for the close button
 
-**4. A file = a small header + the numbers.** We use the simplest picture format there is: `PPM` (Portable PixMap). It starts with three short lines of text:
+A window must stay open until the user closes it. SDL collects things that happen (`event` = something happened: a key, a mouse move, "close" clicked) and our program **waits** for them:
 
-```
-P6         ← "I am a colour picture, numbers stored as bytes"
-4 3        ← width and height
-255        ← the biggest number used
+```cpp
+SDL_Event event;
+while (SDL_WaitEvent(&event) && event.type != SDL_QUIT) {}   // sleep until "close" is clicked
 ```
 
-…and then the 36 colour numbers, one byte each. No compression, no tricks. Image viewers (Ubuntu's *Image Viewer*, GIMP, ImageMagick) can open it.
+`SDL_WaitEvent` puts the program to **sleep** until something happens. It uses no CPU while waiting. This tiny loop grows into Lumen's heart in Chapter 11 (*the event loop*).
 
 ---
 
 ## ▶️ Try it
 
-### The program
-
-New things in this code (everything else is plain C++):
-- `std::vector<unsigned char>`: a list of bytes (`unsigned char` = one number 0–255).
-- `std::ofstream file("tiny.ppm", std::ios::binary)`: open a file for writing, **as raw bytes**.
-- `file << ...`: write text (the header). `file.write(...)`: write raw bytes (the pixels).
-- `reinterpret_cast<const char*>(...)`: "treat my bytes as the type `write` wants". It's needed only because `write` asks for `char`.
-
-📜 **`tiny.ppm` maker — `tiny.cpp`**
+📜 **`main.cpp`**
 ```cpp
-// tiny.cpp -- make a picture by hand: 4 pixels wide, 3 pixels tall.
-#include <fstream>
+// main.cpp -- show OUR pixels in a real window, using SDL2.
+#include <SDL2/SDL.h>
+#include <cstdio>
 #include <vector>
 
 int main() {
-    int width = 4, height = 3;
+    const int width = 400, height = 300;
 
-    // Every pixel = 3 numbers: red, green, blue (0 = off, 255 = full).
-    std::vector<unsigned char> pixels = {
-        255,0,0,     0,255,0,     0,0,255,     255,255,255,   // row 0: red, green, blue, white
-        255,255,0,   0,255,255,   255,0,255,   0,0,0,         // row 1: yellow, cyan, magenta, black
-        128,128,128, 255,128,0,   0,128,255,   200,200,200,   // row 2: grey, orange, sky blue, light grey
-    };
+    // 1. Our picture: the same idea as Chapter 1, 3 bytes (R, G, B) per pixel.
+    std::vector<unsigned char> pixels(width * height * 3);
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x) {
+            unsigned char* p = &pixels[(y * width + x) * 3];   // where pixel (x, y) starts
+            p[0] = x * 255 / (width - 1);                       // red grows to the right
+            p[1] = y * 255 / (height - 1);                      // green grows downwards
+            p[2] = 128;                                         // blue is always half
+        }
 
-    std::ofstream file("tiny.ppm", std::ios::binary);
-    file << "P6\n" << width << " " << height << "\n255\n";       // the header: what kind, how big
-    file.write(reinterpret_cast<const char*>(pixels.data()), pixels.size());   // the numbers
+    // 2. Ask SDL for a window, a "renderer" (the thing that draws into the window)
+    //    and a "texture" (a picture the renderer can show), all 400 x 300.
+    if (SDL_Init(SDL_INIT_VIDEO) != 0) { std::printf("SDL_Init failed: %s\n", SDL_GetError()); return 1; }
+    SDL_Window* window = SDL_CreateWindow("My first window", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                                          width, height, 0);
+    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, 0);
+    SDL_Texture* texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING,
+                                             width, height);
+    if (!window || !renderer || !texture) { std::printf("SDL error: %s\n", SDL_GetError()); return 1; }
+
+    // 3. Copy our numbers into the texture and show it.
+    SDL_UpdateTexture(texture, nullptr, pixels.data(), width * 3);     // width * 3 = bytes per row
+    SDL_RenderCopy(renderer, texture, nullptr, nullptr);
+    SDL_RenderPresent(renderer);
+
+    // 4. Keep the window open until the user closes it.
+    SDL_Event event;
+    while (SDL_WaitEvent(&event) && event.type != SDL_QUIT) {}
+
+    SDL_Quit();
 }
 ```
 
-Build and run (in a terminal, in the folder with the file):
+New in this code:
+- `unsigned char* p = &pixels[(y * width + x) * 3];` = "a **pointer** to where pixel (x, y) starts". Then `p[0]`, `p[1]`, `p[2]` are its red, green, blue. It's the formula from Chapter 1's quick check.
+- `nullptr` in `SDL_UpdateTexture(texture, nullptr, …)` = "the whole texture, not just a part".
+
+### Build it, the quick way (one command)
+
 ```bash
-g++ -std=c++20 -Wall -Wextra tiny.cpp -o tiny
-./tiny
+g++ -std=c++20 -Wall -Wextra main.cpp -o window $(pkg-config --cflags --libs sdl2)
+./window
+```
+`pkg-config --cflags --libs sdl2` prints the extra compiler options SDL2 needs (where its files are, and which library to link). `$( … )` pastes that output into the command.
+
+### Build it, the project way (CMake)
+
+Real projects use CMake. Make this folder:
+
+```
+hello_window/
+├── CMakeLists.txt
+└── src/
+    └── main.cpp      ← the code above
 ```
 
-### 🤔 Guess first
-1. How many **bytes** will `tiny.ppm` be? (Hint: count the header characters, including the 3 line breaks, and add the pixel numbers.)
-2. Open the file in an image viewer. How big will it look on screen?
+📜 **`CMakeLists.txt`** (the recipe):
+```cmake
+cmake_minimum_required(VERSION 3.25)
+project(hello_window LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)              # use C++20
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+find_package(SDL2 REQUIRED)             # find the installed SDL2 library
+
+add_executable(hello_window src/main.cpp)                  # our program and its source file
+target_link_libraries(hello_window PRIVATE SDL2::SDL2)     # ...which uses SDL2
+target_compile_options(hello_window PRIVATE -Wall -Wextra) # ...with warnings on
+```
+
+```bash
+cmake -S . -B build -G Ninja     # read the recipe, prepare a "build" folder (do this once)
+cmake --build build              # compile (run this every time you change the code)
+./build/hello_window
+```
 
 ### ✅ What really happened (I ran it)
 
-<details><summary>Reveal</summary>
+My sandbox has no screen, so I started a **pretend screen** (`Xvfb` = a display server that draws into memory) and took a screenshot of it. Both build ways compiled with **no warnings**.
 
-```
-$ ls -l tiny.ppm
--rw-r--r-- 1 root root 47 Nov 25 12:47 tiny.ppm
-```
+![screenshot: the gradient in a 400x300 window in the middle of a black screen](images/ch02_first_window.png)
 
-**47 bytes** = 11 bytes of header (`P6⏎` 3 + `4 3⏎` 4 + `255⏎` 4) + 36 pixel bytes.
+- The gradient in the middle is **our window**: 400 × 300 pixels, exactly the colours we computed. Same picture as Chapter 1's grid, now live.
+- The black around it is the empty pretend screen. On **your** PC the window sits on your normal desktop, with a title bar saying *My first window*. (My pretend screen has no desktop running, so nobody drew a title bar.)
+- Click the window's ✕: the program ends. That's the `SDL_QUIT` event.
 
-Let's look **inside** the file. First the header, as text (`$` marks a line break):
-```
-P6$
-4 3$
-255$
-```
+### 🤔 Guess first: a wrong "bytes per row"
 
-Then the pixel bytes, one row of the picture per line (I asked the `xxd` tool to start after the 11 header bytes and print 12 bytes per line):
-```
-0000000b: ff 00 00 00 ff 00 00 00 ff ff ff ff  ............
-00000017: ff ff 00 00 ff ff ff 00 ff 00 00 00  ............
-00000023: 80 80 80 ff 80 00 00 80 ff c8 c8 c8  ............
-```
-`xxd` shows bytes in **hexadecimal** (`hex` = counting in 16s, so two hex digits = one byte): `ff` = 255, `80` = 128, `c8` = 200, `00` = 0.
-Read the first line in groups of three: `ff 00 00` (red), `00 ff 00` (green), `00 00 ff` (blue), `ff ff ff` (white). **Exactly the numbers we typed.**
+Change `width * 3` in `SDL_UpdateTexture` to `width * 3 - 3` (we tell SDL each row is **one pixel shorter** than it really is). What will the picture look like?
+(a) the same · (b) a bit darker · (c) slanted · (d) a crash
 
-About question 2: in a viewer it looks like a **tiny speck**, just 4 × 3 dots on your screen. The big picture at the top of this chapter is the same file zoomed 80×, so each pixel became an 80 × 80 square.
+<details><summary>✅ Reveal (I ran it)</summary>
+
+![the same gradient, but cut by a diagonal line: the picture is slanted and wraps around](images/ch02_wrong_row_size.png)
+
+**(c) slanted.** SDL starts every row 3 bytes too early, so each row is shifted **one pixel more** than the row above. After 300 rows the error has added up and wrapped around, giving that diagonal cut.
+Remember this look: **a slanted picture always means a wrong "bytes per row".** Chapter 4 gives that number its real name: the *stride*.
 </details>
-
-### A picture made by a rule
-
-Typing numbers by hand gets boring fast. Instead we can **compute** each pixel's colour from where it is.
-Here red = x (grows to the right), green = y (grows downwards), blue = always 128:
-
-📜 **`grid.cpp`**
-```cpp
-// grid.cpp -- a picture made by a rule: colour depends on where the pixel is.
-#include <fstream>
-#include <vector>
-
-int main() {
-    int width = 256, height = 256;
-    std::vector<unsigned char> pixels;                 // starts empty; we add 3 numbers per pixel
-
-    for (int y = 0; y < height; ++y) {                 // rows, top to bottom
-        for (int x = 0; x < width; ++x) {              // pixels in the row, left to right
-            pixels.push_back(x);                       // red   grows to the right
-            pixels.push_back(y);                       // green grows downwards
-            pixels.push_back(128);                     // blue  is always half
-        }
-    }
-
-    std::ofstream file("grid.ppm", std::ios::binary);
-    file << "P6\n" << width << " " << height << "\n255\n";
-    file.write(reinterpret_cast<const char*>(pixels.data()), pixels.size());
-}
-```
-
-🤔 **Guess first:** which corner will be the most **pink/red**? Which one the most **green**?
-
-<details><summary>✅ Reveal (I ran it: <code>grid.ppm</code> is 196,623 bytes = 15 header + 256 × 256 × 3)</summary>
-
-![a 256x256 gradient: dark blue top-left, pink top-right, green bottom-left, light yellow bottom-right](images/ch01_grid.png)
-
-- Top-left (x=0, y=0): red 0, green 0, blue 128 → **dark blue**.
-- Top-right (x=255): lots of red → **pink**.
-- Bottom-left (y=255): lots of green → **green**.
-- Bottom-right: red + green + some blue → **pale yellow**.
-
-Notice the loop order: `y` outside, `x` inside. That walks the picture **row by row**, the same order the bytes go in the file.
-</details>
-
-> 💡 **This is the most important trick in graphics:** *for every pixel, compute its colour.* Wallpapers, buttons, shadows, even 3D games are this same double loop with smarter rules.
 
 ---
 
-## 🏗️ Build it — Lumen step 1: your first wallpaper
+## 🏗️ Build it — Lumen step 2: the Lumen project
 
-Lumen is the desktop you'll build in this course. Its first piece: **a wallpaper generator**.
+Time to start the real project. From now on, every chapter adds to it.
 
-**Make a program `wallpaper.cpp` that writes `wallpaper.ppm`:**
-- size **320 × 200**;
-- a "sunset": the top row is dark blue, the bottom row is orange, and every row in between is a **smooth mix**. (Hint: for row `y`, use the fraction `t = y / 199.0`: 0 at the top, 1 at the bottom. Each channel = `top + t × (bottom − top)`.)
-- a **white sun**: every pixel within 30 pixels of (240, 60) is white. (Hint: a pixel (x, y) is inside if `(x−240)² + (y−60)² < 30²`.)
+**Make this:**
+```
+lumen/
+├── CMakeLists.txt
+├── .gitignore          ← one line: build/
+└── src/
+    └── main.cpp
+```
+
+**What `main.cpp` must do:**
+- open a window titled **"Lumen"**, **800 × 600**;
+- fill it with your **sunset wallpaper from step 1**, computed in memory at 800 × 600 (no file this time);
+- close when the ✕ is clicked **or** when **Esc** is pressed.
 
 **Done when:**
-- [ ] it compiles with `-Wall -Wextra` and **no warnings**;
-- [ ] `ls -l wallpaper.ppm` shows **192,015 bytes** (work out why before you run it!);
-- [ ] it opens in an image viewer and looks like a sunset with a round sun.
+- [ ] `cmake -S . -B build -G Ninja && cmake --build build` builds with **no warnings**;
+- [ ] the window shows the sunset (sun included), at 800 × 600;
+- [ ] ✕ and Esc both close it;
+- [ ] `git init`, then a first commit: `git add . && git commit -m "Lumen step 2: first window"`.
 
 **Hints:**
-- Copy the shape of `grid.cpp`. Only the colour rule changes.
-- No viewer handy? `convert wallpaper.ppm wallpaper.png` (package `imagemagick`) makes a PNG anything can open.
-- Send me a screenshot or the code. I'll review it.
+- Put the wallpaper code in its own function, e.g. `std::vector<unsigned char> make_wallpaper(int width, int height)`. Then `main` stays short.
+- Esc is a key event: `event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE`. Change the waiting loop so it stops on either event.
+- Your sun moved: at 800 × 600, try the centre (600, 150) with radius 75.
+
+Send me a screenshot or your code when it works.
 
 ---
 
 ## ✅ Quick check
 
-**1.** A picture is 1920 × 1080 pixels with 3 bytes per pixel. How many pixels, and how many bytes of colour numbers?
-<details><summary>Answer</summary>1920 × 1080 = 2,073,600 pixels. × 3 = 6,220,800 bytes (about 6.2 MB). That's one screen full, which your computer redraws up to 60 times every second.</details>
+**1.** What are SDL's window, renderer and texture, in one short line each?
+<details><summary>Answer</summary>Window = the box on the desktop. Renderer = the thing that puts pictures into the window. Texture = a picture the renderer can show; we copy our pixel numbers into it.</details>
 
-**2.** What colour is a pixel stored as `0 255 255`? And `80 80 80` in hex?
-<details><summary>Answer</summary><code>0 255 255</code> = no red, full green, full blue = <b>cyan</b>. Hex <code>80 80 80</code> = 128,128,128 = <b>grey</b>.</details>
+**2.** Why does the code call `SDL_RenderPresent` at the end, instead of the picture appearing right after `SDL_RenderCopy`?
+<details><summary>Answer</summary>The renderer builds the new picture out of sight first, and <code>Present</code> shows it all at once, so you never see a half-finished picture.</details>
 
-**3.** In a 4 × 3 picture, the numbers are stored row by row. Where (which byte number, counting from 0 after the header) does pixel (x=1, y=2) start?
-<details><summary>Answer</summary>Pixels before it: 2 full rows (2 × 4 = 8) + 1 = 9 pixels. 9 × 3 = byte <b>27</b>. The general rule: <code>(y × width + x) × 3</code>. Chapter 4 makes this rule a bit more real.</details>
+**3.** Your window shows a picture that leans to one side and wraps around. What did you most likely get wrong?
+<details><summary>Answer</summary>The bytes-per-row number given to <code>SDL_UpdateTexture</code> (for RGB24 it must be <code>width * 3</code>).</details>
 
 ---
 
 ## ➡️ Next
 
-**Chapter 2 — Your workbench and your first window:** set up the Lumen project, and show your pixels **live in a window** instead of a file.
+**Chapter 3 — How screens make colour:** why red + green light makes yellow, and why the number 128 is *not* half as bright as 255.
 
 <details><summary>🔬 Going deeper (optional)</summary>
 
-- PPM is great for learning because it has no compression. Real formats like **PNG** (lossless) and **JPEG** (lossy, for photos) store the same grid of numbers, just squeezed smaller.
-- Your screen shows a grid of pixels too. A "1920 × 1080 screen" has exactly the grid size of Quick check 1. Later in the course you'll write numbers **straight into the screen's own memory**.
-- Some formats store pixels bottom-row-first (old BMP files) or use 4 numbers per pixel (with transparency, Chapter 5). The idea never changes: a size + a list of numbers.
+- On your PC, SDL talks to your desktop with the **Wayland** or **X11** protocol, and `SDL_CreateRenderer` usually uses your **GPU** to show the texture. Chapter 30 explains these protocols, and in Chapter 31 you'll write a window *without* SDL.
+- `SDL_WaitEvent` sleeps inside the kernel until the desktop sends a message. Chapter 21 shows the real mechanism (`epoll`).
+- We used `SDL_PIXELFORMAT_RGB24` to match Chapter 1. Screens prefer **4 bytes per pixel**; Chapter 4 explains why.
 </details>
